@@ -771,29 +771,22 @@ def main() -> None:
         print(f"Saved plot: {args.plot}")
 
     # Debug frame saving
+
     if debug:
-        targets: List[int] = []
-        parts = [s.strip() for s in args.save_frames.split(",") if s]
-        for p in parts:
-            if p.lower() == "stim":
-                targets.append(stim_idx)
-            elif p.lower() == "det" and det_idx is not None:
-                targets.append(det_idx)
-            else:
-                try:
-                    targets.append(int(p))
-                except ValueError:
-                    pass
-        if targets:
-            save_debug_frames_temporal(
-                video_path=args.video,
-                roi=fish_roi,
-                centers=targets,
-                kernel=kernel,
-                norm=norm,
-                out_dir="out/debug",
-            )
-            print("Saved debug frames to: out/debug")
+        targets = [0]
+        if stim_idx is not None:
+            targets.append(stim_idx)
+        if det_idx is not None:
+            targets.append(det_idx)
+        save_debug_frames_temporal(
+            video_path=args.video,
+            roi=fish_roi,
+            centers=targets,
+            kernel=kernel,
+            norm=norm,
+            out_dir="out/debug",
+        )
+        print("Saved debug frames to: out/debug")
 
 
 if __name__ == "__main__":
