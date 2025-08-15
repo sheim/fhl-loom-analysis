@@ -272,7 +272,10 @@ def preprocess_gray_smooth(
     then optional spatial smoothing.
     """
     g = preprocess_gray(bgr, mode)
-    return apply_spatial_smoothing(g, smooth, smooth_ksize, smooth_sigma)
+    if smooth == "none":
+        return g
+    else:
+        return apply_spatial_smoothing(g, smooth, smooth_ksize, smooth_sigma)
 
 
 # ----------------------- Stimulus detection ---------------------------
@@ -427,6 +430,9 @@ def energy_temporal_series(
     center_end: int,
     kernel: np.ndarray,
     norm: str,
+    smooth: str = "none",
+    smooth_ksize: int = 3,
+    smooth_sigma: float = 1.0,
     viz: bool = False,
     viz_scale: int = 2,
     viz_every: int = 1,
@@ -452,7 +458,8 @@ def energy_temporal_series(
         ok, fr = cap.read()
         if not ok:
             return None
-        return preprocess_gray(crop(fr, roi), norm)
+        roi_bgr = crop(fr, roi)
+        return preprocess_gray_smooth(roi_bgr, norm, smooth, smooth_ksize, smooth_sigma)
 
     while len(buf) < (2 * H + 1):
         g = read_gray()
@@ -504,6 +511,96 @@ def energy_temporal_series(
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, pos0)
     return centers, energies
+
+
+def track_energy_temporal(
+    cap: cv2.VideoCapture,
+    roi: Tuple[int, int, int, int],
+    stim_idx: int,
+    baseline_n: int,
+    sigma: float,
+    min_run: int,
+    max_scan: int,
+    norm: str,
+    stride: int,
+    kernel: np.ndarray,
+    viz: bool,
+    viz_scale: int,
+    viz_every: int,
+    smooth: str,
+    smooth_ksize: int,
+    smooth_sigma: float,
+) -> Tuple[List[int], List[float], float, Optional[int]]:
+    """
+    Baseline + scan using a zero-sum temporal kernel.
+    Returns (eval_centers, eval_energies, threshold, detected_center).
+    """
+    H = len(kernel) // 2
+    stride = max(1, int(stride))
+
+    # ---- Baseline centers entirely pre-stim (keep H margin)
+    base_end = stim_idx - 1 - H
+    base_start = base_end - (baseline_n - 1)
+    base_start = max(base_start, H)
+    if base_start > base_end:
+        print("Baseline window too short for temporal kernel.", file=sys.stderr)
+        return [], [], 0.0, None
+
+    b_centers, b_vals = energy_temporal_series(
+        cap=cap,
+        roi=roi,
+        center_start=base_start,
+        center_end=base_end,
+        kernel=kernel,
+        norm=norm,
+        smooth=smooth,
+        smooth_ksize=smooth_ksize,
+        smooth_sigma=smooth_sigma,
+        viz=False,
+    )
+    if len(b_vals) < max(5, min_run + 2):
+        print("Not enough baseline centers.", file=sys.stderr)
+        return [], [], 0.0, None
+
+    mu = float(np.mean(b_vals))
+    sd = float(np.std(b_vals)) or 1e-6
+    thr = mu + sigma * sd
+
+    # ---- Scan centers after stim (avoid pre-stim leakage by H)
+    scan_start = stim_idx + H
+    scan_end = scan_start + max_scan - 1
+
+    s_centers, s_vals = energy_temporal_series(
+        cap=cap,
+        roi=roi,
+        center_start=scan_start,
+        center_end=scan_end,
+        kernel=kernel,
+        norm=norm,
+        smooth=smooth,
+        smooth_ksize=smooth_ksize,
+        smooth_sigma=smooth_sigma,
+        viz=viz,
+        viz_scale=viz_scale,
+        viz_every=viz_every,
+        thr=thr,
+    )
+    if not s_centers:
+        return [], [], thr, None
+
+    eval_centers = s_centers[::stride]
+    eval_vals = s_vals[::stride]
+
+    run = 0
+    detected = None
+    for idx, e in zip(eval_centers, eval_vals):
+        over = e > thr
+        run = run + 1 if over else 0
+        if run >= min_run:
+            detected = idx
+            break
+
+    return eval_centers, eval_vals, thr, detected
 
 
 def compute_threshold_temporal(
@@ -638,6 +735,80 @@ def make_plot(
 # ----------------------- Debug frame saving ---------------------------
 
 
+# def save_debug_frames_temporal(
+#     video_path: Path,
+#     roi: Tuple[int, int, int, int],
+#     centers: List[int],
+#     kernel: np.ndarray,
+#     norm: str,
+#     out_dir: Path,
+# ) -> None:
+#     """
+#     Save for each center t:
+#       - full_frame_{t:06d}.png (with ROI box, energy label)
+#       - roi_frame_{t:06d}.png  (processed center frame g_t)
+#       - resp_frame_{t:06d}.png (|temporal response| = |R_t|)
+#     """
+#     out_dir = Path(out_dir)
+#     out_dir.mkdir(parents=True, exist_ok=True)
+
+#     cap = cv2.VideoCapture(str(video_path))
+#     if not cap.isOpened():
+#         raise RuntimeError(f"Cannot open video: {video_path}")
+
+#     H = len(kernel) // 2
+
+#     def read_gray_at(idx: int) -> Optional[np.ndarray]:
+#         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+#         ok, fr = cap.read()
+#         if not ok:
+#             return None
+#         return preprocess_gray(crop(fr, roi), norm)
+
+#     x, y, w, h = roi
+#     for t in sorted(set(c for c in centers if c >= 0)):
+#         # Build window g_{t-H}..g_{t+H}
+#         stack: List[np.ndarray] = []
+#         valid = True
+#         for j in range(t - H, t + H + 1):
+#             g = read_gray_at(j)
+#             if g is None:
+#                 valid = False
+#                 break
+#             stack.append(g)
+#         if not valid:
+#             continue
+
+#         resp = np.zeros_like(stack[0], dtype=np.float32)
+#         for wgt, img in zip(kernel, stack):
+#             resp += float(wgt) * img
+#         e = float(np.mean(resp * resp))
+
+#         # Full frame with ROI
+#         cap.set(cv2.CAP_PROP_POS_FRAMES, t)
+#         ok, full = cap.read()
+#         if not ok:
+#             continue
+#         cv2.rectangle(full, (x, y), (x + w, y + h), (0, 255, 255), 2)
+#         cv2.putText(
+#             full,
+#             f"center={t} E={e:.3g}",
+#             (10, 30),
+#             cv2.FONT_HERSHEY_SIMPLEX,
+#             0.8,
+#             (0, 255, 255),
+#             2,
+#             cv2.LINE_AA,
+#         )
+#         cv2.imwrite(str(out_dir / f"full_frame_{t:06d}.png"), full)
+
+#         # Center ROI and |response|
+#         cv2.imwrite(str(out_dir / f"roi_frame_{t:06d}.png"), to_u8(stack[H]))
+#         cv2.imwrite(str(out_dir / f"resp_frame_{t:06d}.png"), to_u8(np.abs(resp)))
+
+#     cap.release()
+
+
 def save_debug_frames_temporal(
     video_path: Path,
     roi: Tuple[int, int, int, int],
@@ -645,6 +816,9 @@ def save_debug_frames_temporal(
     kernel: np.ndarray,
     norm: str,
     out_dir: Path,
+    smooth: str = "none",
+    smooth_ksize: int = 3,
+    smooth_sigma: float = 0.8,
 ) -> None:
     """
     Save for each center t:
@@ -666,10 +840,11 @@ def save_debug_frames_temporal(
         ok, fr = cap.read()
         if not ok:
             return None
-        return preprocess_gray(crop(fr, roi), norm)
+        roi_bgr = crop(fr, roi)
+        return preprocess_gray_smooth(roi_bgr, norm, smooth, smooth_ksize, smooth_sigma)
 
     x, y, w, h = roi
-    for t in sorted(set(c for c in centers if c >= 0)):
+    for t in sorted(set(c for c in centers if c is not None and c >= 0)):
         # Build window g_{t-H}..g_{t+H}
         stack: List[np.ndarray] = []
         valid = True
@@ -687,7 +862,6 @@ def save_debug_frames_temporal(
             resp += float(wgt) * img
         e = float(np.mean(resp * resp))
 
-        # Full frame with ROI
         cap.set(cv2.CAP_PROP_POS_FRAMES, t)
         ok, full = cap.read()
         if not ok:
@@ -703,9 +877,8 @@ def save_debug_frames_temporal(
             2,
             cv2.LINE_AA,
         )
-        cv2.imwrite(str(out_dir / f"full_frame_{t:06d}.png"), full)
+        # cv2.imwrite(str(out_dir / f"full_frame_{t:06d}.png"), full)
 
-        # Center ROI and |response|
         cv2.imwrite(str(out_dir / f"roi_frame_{t:06d}.png"), to_u8(stack[H]))
         cv2.imwrite(str(out_dir / f"resp_frame_{t:06d}.png"), to_u8(np.abs(resp)))
 
@@ -719,7 +892,7 @@ def main() -> None:
     args = parse_args()
 
     # parameters
-    debug = False
+    debug = True
     max_frames = 150
     baseline_frames = 8
     sat_drop = 25.0
@@ -732,9 +905,13 @@ def main() -> None:
     norm = "zscore"
     stride = 5
     kernel = "diff5"
-    viz_roi = False  # for debugging
+    viz_roi = True  # for debugging
     viz_scale = 2
     viz_every = 5
+
+    smooth = "none"  # 'none', 'gaussian', or 'box'
+    smooth_ksize = 5  # odd >= 3 recommended (3, 5, 7)
+    smooth_sigma = 1.0  # used for gaussian
 
     # -----
 
@@ -795,20 +972,40 @@ def main() -> None:
     # 2) Coarse scan (fast, with stride)
     scan_start = stim_idx + H
     scan_end = scan_start + motion_max_frames - 1
-    idxs, vals, det_idx = scan_temporal(
+    # idxs, vals, det_idx = scan_temporal(
+    #     cap=cap,
+    #     roi=fish_roi,
+    #     center_start=scan_start,
+    #     center_end=scan_end,
+    #     kernel=kernel,
+    #     norm=norm,
+    #     thr=thr,
+    #     min_run=min_run,
+    #     stride=stride,
+    #     viz=viz_roi,
+    #     viz_scale=viz_scale,
+    #     viz_every=viz_every,
+    # )
+
+    idxs, vals, thr, det_idx = track_energy_temporal(
         cap=cap,
         roi=fish_roi,
-        center_start=scan_start,
-        center_end=scan_end,
-        kernel=kernel,
-        norm=norm,
-        thr=thr,
+        stim_idx=stim_idx,
+        baseline_n=motion_baseline_n,
+        sigma=energy_sigma,
         min_run=min_run,
+        max_scan=motion_max_frames,
+        norm=norm,
         stride=stride,
+        kernel=kernel,
         viz=viz_roi,
         viz_scale=viz_scale,
         viz_every=viz_every,
+        smooth=smooth,
+        smooth_ksize=smooth_ksize,
+        smooth_sigma=smooth_sigma,
     )
+
     if not idxs:
         cap.release()
         print("No energy values computed.", file=sys.stderr)
@@ -876,6 +1073,9 @@ def main() -> None:
             centers=targets,
             kernel=kernel,
             norm=norm,
+            smooth=smooth,
+            smooth_ksize=smooth_ksize,
+            smooth_sigma=smooth_sigma,
             out_dir="out/debug",
         )
         print("Saved debug frames to: out/debug")
