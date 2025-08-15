@@ -152,7 +152,7 @@ def parse_args() -> argparse.Namespace:
 # ----------------------- ROI selection (2 clicks) ---------------------
 
 
-def select_roi_click2(frame: np.ndarray, title: str) -> Tuple[int, int, int, int]:
+def select_roi_click(frame: np.ndarray, title: str) -> Tuple[int, int, int, int]:
     msg = (
         f"{title} — click top-left then bottom-right; "
         f"[r]=reset, [q]=cancel, [Enter]=accept"
@@ -240,6 +240,39 @@ def to_u8(img: np.ndarray) -> np.ndarray:
         return np.zeros_like(img, dtype=np.uint8)
     out = (img - a) * (255.0 / (b - a))
     return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def apply_spatial_smoothing(
+    g: np.ndarray, kind: str, ksize: int, sigma: float
+) -> np.ndarray:
+    """
+    Spatial smoothing on a float32 grayscale image g.
+    kind: 'none' | 'gaussian' | 'box'
+    ksize: odd >= 1
+    sigma: stddev for gaussian (ignored for box)
+    """
+    if kind == "none":
+        return g
+    k = max(1, int(ksize))
+    if k % 2 == 0:
+        k += 1
+    if kind == "gaussian":
+        return cv2.GaussianBlur(g, (k, k), sigmaX=float(sigma), sigmaY=float(sigma))
+    if kind == "box":
+        return cv2.blur(g, (k, k))
+    # Fallback: no smoothing
+    return g
+
+
+def preprocess_gray_smooth(
+    bgr: np.ndarray, mode: str, smooth: str, smooth_ksize: int, smooth_sigma: float
+) -> np.ndarray:
+    """
+    Convert BGR->gray float32, apply per-frame normalization (mode),
+    then optional spatial smoothing.
+    """
+    g = preprocess_gray(bgr, mode)
+    return apply_spatial_smoothing(g, smooth, smooth_ksize, smooth_sigma)
 
 
 # ----------------------- Stimulus detection ---------------------------
@@ -473,37 +506,29 @@ def energy_temporal_series(
     return centers, energies
 
 
-def track_energy_temporal(
+def compute_threshold_temporal(
     cap: cv2.VideoCapture,
     roi: Tuple[int, int, int, int],
     stim_idx: int,
     baseline_n: int,
-    sigma: float,
-    min_run: int,
-    max_scan: int,
-    norm: str,
-    stride: int,
     kernel: np.ndarray,
-    viz: bool,
-    viz_scale: int,
-    viz_every: int,
-) -> Tuple[List[int], List[float], float, Optional[int]]:
+    norm: str,
+    min_run: int,
+) -> Tuple[float, float, float, List[int], List[float]]:
     """
-    Baseline + scan using a zero-sum temporal kernel.
-    Returns (eval_centers, eval_energies, threshold, detected_center).
+    Compute baseline threshold (mean + sigma*std is applied later).
+    Returns (mu, sd, thr_dummy=0.0, base_centers, base_vals).
+    We return 0.0 for thr here; caller applies sigma externally.
     """
     H = len(kernel) // 2
-    stride = max(1, int(stride))
-
-    # ---- Baseline centers entirely pre-stim (keep H margin)
     base_end = stim_idx - 1 - H
-    base_start = base_end - (baseline_n - 1)
-    base_start = max(base_start, H)
+    base_start = max(base_end - (baseline_n - 1), H)
+
     if base_start > base_end:
         print("Baseline window too short for temporal kernel.", file=sys.stderr)
-        return [], [], 0.0, None
+        return 0.0, 0.0, 0.0, [], []
 
-    b_centers, b_vals = energy_temporal_series(
+    centers, vals = energy_temporal_series(
         cap=cap,
         roi=roi,
         center_start=base_start,
@@ -512,23 +537,41 @@ def track_energy_temporal(
         norm=norm,
         viz=False,
     )
-    if len(b_vals) < max(5, min_run + 2):
+    if len(vals) < max(5, min_run + 2):
         print("Not enough baseline centers.", file=sys.stderr)
-        return [], [], 0.0, None
+        return 0.0, 0.0, 0.0, [], []
 
-    mu = float(np.mean(b_vals))
-    sd = float(np.std(b_vals)) or 1e-6
-    thr = mu + sigma * sd
+    mu = float(np.mean(vals))
+    sd = float(np.std(vals)) or 1e-6
+    return mu, sd, 0.0, centers, vals
 
-    # ---- Scan centers after stim (avoid pre-stim leakage by H)
-    scan_start = stim_idx + H
-    scan_end = scan_start + max_scan - 1
 
-    s_centers, s_vals = energy_temporal_series(
+def scan_temporal(
+    cap: cv2.VideoCapture,
+    roi: Tuple[int, int, int, int],
+    center_start: int,
+    center_end: int,
+    kernel: np.ndarray,
+    norm: str,
+    thr: float,
+    min_run: int,
+    stride: int,
+    viz: bool = False,
+    viz_scale: int = 2,
+    viz_every: int = 1,
+) -> Tuple[List[int], List[float], Optional[int]]:
+    """
+    Scan [center_start, center_end] using given threshold.
+    Returns (eval_centers, eval_vals, detected_center or None).
+    """
+    if center_end < center_start:
+        return [], [], None
+
+    centers, vals = energy_temporal_series(
         cap=cap,
         roi=roi,
-        center_start=scan_start,
-        center_end=scan_end,
+        center_start=center_start,
+        center_end=center_end,
         kernel=kernel,
         norm=norm,
         viz=viz,
@@ -536,22 +579,22 @@ def track_energy_temporal(
         viz_every=viz_every,
         thr=thr,
     )
-    if not s_centers:
-        return [], [], thr, None
+    if not centers:
+        return [], [], None
 
-    eval_centers = s_centers[::stride]
-    eval_vals = s_vals[::stride]
+    stride = max(1, int(stride))
+    eval_centers = centers[::stride]
+    eval_vals = vals[::stride]
 
     run = 0
-    detected = None
+    det = None
     for idx, e in zip(eval_centers, eval_vals):
-        over = e > thr
-        run = run + 1 if over else 0
+        run = run + 1 if e > thr else 0
         if run >= min_run:
-            detected = idx
+            det = idx
             break
 
-    return eval_centers, eval_vals, thr, detected
+    return eval_centers, eval_vals, det
 
 
 # ----------------------- Plot / CSV -----------------------------------
@@ -676,13 +719,12 @@ def main() -> None:
     args = parse_args()
 
     # parameters
-    debug = True
+    debug = False
     max_frames = 150
-    video = "videos/Trial_2_circle.MP4"
     baseline_frames = 8
     sat_drop = 25.0
     diff_thresh = 18.0
-    show = True
+    show = False
     motion_baseline_n = 40
     energy_sigma = 5.0
     min_run = 2
@@ -690,12 +732,9 @@ def main() -> None:
     norm = "zscore"
     stride = 5
     kernel = "diff5"
-    viz_roi = True
+    viz_roi = False  # for debugging
     viz_scale = 2
     viz_every = 5
-    # plot_path = "out/trial01_energy.png"
-    # csv_path = "out/trial01_energy.csv"
-    save_frames = ""
 
     # -----
 
@@ -714,7 +753,7 @@ def main() -> None:
         sys.exit(1)
 
     # Stimulus ROI & detection
-    stim_roi = select_roi_click2(first, "Stimulus ROI")
+    stim_roi = select_roi_click(first, "Stimulus ROI")
     base_sat, base_bgr = build_stim_baseline(cap, first, stim_roi, n=baseline_frames)
     stim_idx = find_stimulus(
         cap=cap,
@@ -733,24 +772,71 @@ def main() -> None:
     print(f"Stimulus frame index: {stim_idx}")
 
     # Fish ROI & temporal energy
-    fish_roi = select_roi_click2(first, "Fish ROI")
+    fish_roi = select_roi_click(first, "Fish ROI")
     kernel = get_kernel(kernel)
 
-    idxs, vals, thr, det_idx = track_energy_temporal(
+    H = len(kernel) // 2
+
+    # 1) Baseline -> threshold
+    mu, sd, _, base_centers, base_vals = compute_threshold_temporal(
         cap=cap,
         roi=fish_roi,
         stim_idx=stim_idx,
         baseline_n=motion_baseline_n,
-        sigma=energy_sigma,
-        min_run=min_run,
-        max_scan=motion_max_frames,
-        norm=norm,
-        stride=stride,
         kernel=kernel,
+        norm=norm,
+        min_run=min_run,
+    )
+    if not base_vals:
+        cap.release()
+        sys.exit(4)
+    thr = mu + energy_sigma * sd
+
+    # 2) Coarse scan (fast, with stride)
+    scan_start = stim_idx + H
+    scan_end = scan_start + motion_max_frames - 1
+    idxs, vals, det_idx = scan_temporal(
+        cap=cap,
+        roi=fish_roi,
+        center_start=scan_start,
+        center_end=scan_end,
+        kernel=kernel,
+        norm=norm,
+        thr=thr,
+        min_run=min_run,
+        stride=stride,
         viz=viz_roi,
         viz_scale=viz_scale,
         viz_every=viz_every,
     )
+    if not idxs:
+        cap.release()
+        print("No energy values computed.", file=sys.stderr)
+        sys.exit(4)
+
+    # 3) Refine scan (exact, stride=1) around coarse detection
+    final_det_idx = det_idx
+    if det_idx is not None:
+        refine_halfwin = max(2 * stride, 50)
+        r_start = max(scan_start, det_idx - refine_halfwin)
+        r_end = min(scan_end, det_idx + refine_halfwin)
+        _, _, det_ref = scan_temporal(
+            cap=cap,
+            roi=fish_roi,
+            center_start=r_start,
+            center_end=r_end,
+            kernel=kernel,
+            norm=norm,
+            thr=thr,
+            min_run=min_run,
+            stride=1,
+            viz=False,
+        )
+        if det_ref is not None:
+            final_det_idx = det_ref
+
+    cap.release()
+
     cap.release()
 
     if not idxs:
@@ -760,24 +846,30 @@ def main() -> None:
     if det_idx is None:
         print("No movement detected within scan window.")
     else:
-        print(f"Fish first-movement (center frame): {det_idx}")
+        print(f"Coarse first-movement (center): {det_idx}")
+        print(f"Refined first-movement (center): {final_det_idx}")
 
+    # CSV/plot (keep coarse series for speed; plot refined marker)
     if args.csv:
         save_csv(args.csv, idxs, vals)
         print(f"Saved CSV: {args.csv}")
 
-    make_plot(idxs, vals, thr, stim_idx, det_idx, args.plot)
+    make_plot(idxs, vals, thr, stim_idx, final_det_idx, args.plot)
     if args.plot:
         print(f"Saved plot: {args.plot}")
+
+        make_plot(idxs, vals, thr, stim_idx, det_idx, args.plot)
+        if args.plot:
+            print(f"Saved plot: {args.plot}")
 
     # Debug frame saving
 
     if debug:
-        targets = [0]
+        targets: List[int] = []
         if stim_idx is not None:
             targets.append(stim_idx)
-        if det_idx is not None:
-            targets.append(det_idx)
+        if final_det_idx is not None:
+            targets.extend(range(max(0, final_det_idx - 10), final_det_idx + 11))
         save_debug_frames_temporal(
             video_path=args.video,
             roi=fish_roi,
