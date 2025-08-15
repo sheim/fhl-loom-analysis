@@ -674,6 +674,31 @@ def save_debug_frames_temporal(
 
 def main() -> None:
     args = parse_args()
+
+    # parameters
+    debug = True
+    max_frames = 150
+    video = "videos/Trial_2_circle.MP4"
+    baseline_frames = 8
+    sat_drop = 25.0
+    diff_thresh = 18.0
+    show = True
+    motion_baseline_n = 40
+    energy_sigma = 5.0
+    min_run = 2
+    motion_max_frames = 600
+    norm = "zscore"
+    stride = 5
+    kernel = "diff5"
+    viz_roi = True
+    viz_scale = 2
+    viz_every = 5
+    # plot_path = "out/trial01_energy.png"
+    # csv_path = "out/trial01_energy.csv"
+    save_frames = ""
+
+    # -----
+
     if not args.video.exists():
         print(f"Video not found: {args.video}", file=sys.stderr)
         sys.exit(1)
@@ -690,18 +715,16 @@ def main() -> None:
 
     # Stimulus ROI & detection
     stim_roi = select_roi_click2(first, "Stimulus ROI")
-    base_sat, base_bgr = build_stim_baseline(
-        cap, first, stim_roi, n=args.baseline_frames
-    )
+    base_sat, base_bgr = build_stim_baseline(cap, first, stim_roi, n=baseline_frames)
     stim_idx = find_stimulus(
         cap=cap,
         roi=stim_roi,
         base_sat=base_sat,
         base_bgr=base_bgr,
-        max_frames=args.max_frames,
-        sat_drop=args.sat_drop,
-        diff_thresh=args.diff_thresh,
-        show=args.show,
+        max_frames=max_frames,
+        sat_drop=sat_drop,
+        diff_thresh=diff_thresh,
+        show=show,
     )
     if stim_idx is None:
         cap.release()
@@ -711,22 +734,22 @@ def main() -> None:
 
     # Fish ROI & temporal energy
     fish_roi = select_roi_click2(first, "Fish ROI")
-    kernel = get_kernel(args.kernel)
+    kernel = get_kernel(kernel)
 
     idxs, vals, thr, det_idx = track_energy_temporal(
         cap=cap,
         roi=fish_roi,
         stim_idx=stim_idx,
-        baseline_n=args.motion_baseline_n,
-        sigma=args.energy_sigma,
-        min_run=args.min_run,
-        max_scan=args.motion_max_frames,
-        norm=args.norm,
-        stride=args.stride,
+        baseline_n=motion_baseline_n,
+        sigma=energy_sigma,
+        min_run=min_run,
+        max_scan=motion_max_frames,
+        norm=norm,
+        stride=stride,
         kernel=kernel,
-        viz=args.viz_roi,
-        viz_scale=args.viz_scale,
-        viz_every=args.viz_every,
+        viz=viz_roi,
+        viz_scale=viz_scale,
+        viz_every=viz_every,
     )
     cap.release()
 
@@ -748,7 +771,7 @@ def main() -> None:
         print(f"Saved plot: {args.plot}")
 
     # Debug frame saving
-    if args.save_frames:
+    if debug:
         targets: List[int] = []
         parts = [s.strip() for s in args.save_frames.split(",") if s]
         for p in parts:
@@ -767,10 +790,10 @@ def main() -> None:
                 roi=fish_roi,
                 centers=targets,
                 kernel=kernel,
-                norm=args.norm,
-                out_dir=args.save_dir,
+                norm=norm,
+                out_dir="out/debug",
             )
-            print(f"Saved debug frames to: {args.save_dir}")
+            print("Saved debug frames to: out/debug")
 
 
 if __name__ == "__main__":
