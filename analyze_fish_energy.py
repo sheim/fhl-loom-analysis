@@ -40,84 +40,6 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("video", type=Path, help="Input video path")
 
-    # Stimulus detection
-    p.add_argument(
-        "--max-frames", type=int, default=150, help="Max frames to scan for stimulus"
-    )
-    p.add_argument(
-        "--baseline-frames",
-        type=int,
-        default=8,
-        help="Frames to avg while rectangle is present",
-    )
-    p.add_argument(
-        "--sat-drop",
-        type=float,
-        default=25.0,
-        help="Min drop in mean saturation to trigger",
-    )
-    p.add_argument(
-        "--diff-thresh",
-        type=float,
-        default=18.0,
-        help="Alt: min grayscale L2 diff per pixel",
-    )
-    p.add_argument(
-        "--show", action="store_true", help="Show stimulus scan visualization"
-    )
-
-    # Energy tracking
-    p.add_argument(
-        "--motion-baseline-n",
-        type=int,
-        default=40,
-        help="Centers for pre-stim baseline (>=5 recommended)",
-    )
-    p.add_argument(
-        "--energy-sigma",
-        type=float,
-        default=5.0,
-        help="Threshold = mean + sigma*std (baseline)",
-    )
-    p.add_argument(
-        "--min-run", type=int, default=2, help="Consecutive eval points over threshold"
-    )
-    p.add_argument(
-        "--motion-max-frames",
-        type=int,
-        default=600,
-        help="Max centers to scan after stimulus",
-    )
-    p.add_argument(
-        "--norm",
-        choices=["none", "zscore", "clahe"],
-        default="zscore",
-        help="ROI grayscale preprocessing before filtering",
-    )
-    p.add_argument(
-        "--stride", type=int, default=5, help="Record/evaluate every N centers (>=1)"
-    )
-    p.add_argument(
-        "--kernel",
-        default="diff5",
-        help=(
-            "Temporal kernel: diff3|diff5|diff7|custom:a,b,c (odd length, zero-sum)."
-        ),
-    )
-
-    # Live visualization
-    p.add_argument(
-        "--viz-roi",
-        action="store_true",
-        help="Show processed ROI + |response| + energy bar",
-    )
-    p.add_argument(
-        "--viz-scale", type=int, default=2, help="Upscale factor for ROI viz"
-    )
-    p.add_argument(
-        "--viz-every", type=int, default=1, help="Show viz every k centers (>=1)"
-    )
-
     # Outputs
     p.add_argument(
         "--plot",
@@ -714,99 +636,44 @@ def make_plot(
     det_idx: Optional[int],
     out: Optional[Path],
 ) -> None:
-    plt.figure()
-    plt.plot(idxs, vals, label="energy (subsampled)")
-    plt.axhline(thr, linestyle="--", label="threshold")
-    plt.axvline(stim_idx, linestyle=":", label="stimulus")
+    fig, ax = plt.subplots()
+    ax.plot(idxs, vals, label="energy (subsampled)")
+    ax.axhline(thr, linestyle="--", label="threshold")
+    ax.axvline(stim_idx, linestyle=":", label="stimulus")
     if det_idx is not None:
-        plt.axvline(det_idx, linestyle="-.", label="first movement")
-    plt.xlabel("frame (center)")
-    plt.ylabel("energy")
-    plt.legend()
-    plt.tight_layout()
+        ax.axvline(det_idx, linestyle="-.", label="first movement")
+
+    ax.set_ylabel("energy")
+    ax.set_xlabel("frame (center)", labelpad=26)  # leave room for extra row
+    ax.legend()
+
+    # --- Special labels on a separate bottom axis (no overlap) ---
+    special_ticks = [stim_idx]
+    special_labels = [f"{stim_idx} (stim)"]
+    if det_idx is not None:
+        special_ticks.append(det_idx)
+        special_labels.append(f"{det_idx} (det)")
+
+    # If stim/det are extremely close, stack into one two-line label
+    locs = list(ax.get_xticks())
+    steps = [b - a for a, b in zip(locs, locs[1:])] or [1]
+    avg_step = sum(steps) / len(steps)
+    if det_idx is not None and abs(det_idx - stim_idx) < 0.35 * avg_step:
+        special_ticks = [stim_idx]
+        special_labels = [f"{stim_idx} (stim)\n{det_idx} (det)"]
+
+    secax = ax.secondary_xaxis("bottom", functions=(lambda x: x, lambda x: x))
+    secax.set_xticks(special_ticks)
+    secax.set_xticklabels(special_labels)
+    secax.tick_params(axis="x", pad=16, length=0)
+
+    fig.tight_layout()
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(out, dpi=200)
-        plt.close()
+        fig.savefig(out, dpi=200)
+        plt.close(fig)
     else:
         plt.show()
-
-
-# ----------------------- Debug frame saving ---------------------------
-
-
-# def save_debug_frames_temporal(
-#     video_path: Path,
-#     roi: Tuple[int, int, int, int],
-#     centers: List[int],
-#     kernel: np.ndarray,
-#     norm: str,
-#     out_dir: Path,
-# ) -> None:
-#     """
-#     Save for each center t:
-#       - full_frame_{t:06d}.png (with ROI box, energy label)
-#       - roi_frame_{t:06d}.png  (processed center frame g_t)
-#       - resp_frame_{t:06d}.png (|temporal response| = |R_t|)
-#     """
-#     out_dir = Path(out_dir)
-#     out_dir.mkdir(parents=True, exist_ok=True)
-
-#     cap = cv2.VideoCapture(str(video_path))
-#     if not cap.isOpened():
-#         raise RuntimeError(f"Cannot open video: {video_path}")
-
-#     H = len(kernel) // 2
-
-#     def read_gray_at(idx: int) -> Optional[np.ndarray]:
-#         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-#         ok, fr = cap.read()
-#         if not ok:
-#             return None
-#         return preprocess_gray(crop(fr, roi), norm)
-
-#     x, y, w, h = roi
-#     for t in sorted(set(c for c in centers if c >= 0)):
-#         # Build window g_{t-H}..g_{t+H}
-#         stack: List[np.ndarray] = []
-#         valid = True
-#         for j in range(t - H, t + H + 1):
-#             g = read_gray_at(j)
-#             if g is None:
-#                 valid = False
-#                 break
-#             stack.append(g)
-#         if not valid:
-#             continue
-
-#         resp = np.zeros_like(stack[0], dtype=np.float32)
-#         for wgt, img in zip(kernel, stack):
-#             resp += float(wgt) * img
-#         e = float(np.mean(resp * resp))
-
-#         # Full frame with ROI
-#         cap.set(cv2.CAP_PROP_POS_FRAMES, t)
-#         ok, full = cap.read()
-#         if not ok:
-#             continue
-#         cv2.rectangle(full, (x, y), (x + w, y + h), (0, 255, 255), 2)
-#         cv2.putText(
-#             full,
-#             f"center={t} E={e:.3g}",
-#             (10, 30),
-#             cv2.FONT_HERSHEY_SIMPLEX,
-#             0.8,
-#             (0, 255, 255),
-#             2,
-#             cv2.LINE_AA,
-#         )
-#         cv2.imwrite(str(out_dir / f"full_frame_{t:06d}.png"), full)
-
-#         # Center ROI and |response|
-#         cv2.imwrite(str(out_dir / f"roi_frame_{t:06d}.png"), to_u8(stack[H]))
-#         cv2.imwrite(str(out_dir / f"resp_frame_{t:06d}.png"), to_u8(np.abs(resp)))
-
-#     cap.release()
 
 
 def save_debug_frames_temporal(
@@ -1047,17 +914,12 @@ def main() -> None:
         print(f"Refined first-movement (center): {final_det_idx}")
 
     # CSV/plot (keep coarse series for speed; plot refined marker)
-    if args.csv:
-        save_csv(args.csv, idxs, vals)
-        print(f"Saved CSV: {args.csv}")
+    case_name = args.video.parent.name + args.video.name[:-4]
 
-    make_plot(idxs, vals, thr, stim_idx, final_det_idx, args.plot)
-    if args.plot:
-        print(f"Saved plot: {args.plot}")
-
-        make_plot(idxs, vals, thr, stim_idx, det_idx, args.plot)
-        if args.plot:
-            print(f"Saved plot: {args.plot}")
+    save_csv(Path("out/" + case_name + "_energy.csv"), idxs, vals)
+    print(f"Saved CSV: out/" + case_name + "_energy.csv")
+    plot_name = "out/" + case_name + ".png"
+    make_plot(idxs, vals, thr, stim_idx, final_det_idx, Path(plot_name))
 
     # Debug frame saving
 
@@ -1066,7 +928,7 @@ def main() -> None:
         if stim_idx is not None:
             targets.append(stim_idx)
         if final_det_idx is not None:
-            targets.extend(range(max(0, final_det_idx - 10), final_det_idx + 11))
+            targets.extend(range(max(0, final_det_idx - 5), final_det_idx + 5))
         save_debug_frames_temporal(
             video_path=args.video,
             roi=fish_roi,
@@ -1076,9 +938,9 @@ def main() -> None:
             smooth=smooth,
             smooth_ksize=smooth_ksize,
             smooth_sigma=smooth_sigma,
-            out_dir="out/debug",
+            out_dir="out/debug/" + case_name,
         )
-        print("Saved debug frames to: out/debug")
+        print("Saved debug frames to: out/debug" + case_name)
 
 
 if __name__ == "__main__":
