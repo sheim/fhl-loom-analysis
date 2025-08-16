@@ -39,35 +39,6 @@ import numpy as np
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("video", type=Path, help="Input video path")
-
-    # Outputs
-    p.add_argument(
-        "--plot",
-        type=Path,
-        default=None,
-        help="Save energy plot PNG; if omitted, just show",
-    )
-    p.add_argument(
-        "--csv", type=Path, default=None, help="Save CSV of (center_frame, energy)"
-    )
-
-    # Debug frames
-    p.add_argument(
-        "--save-frames",
-        type=str,
-        default="",
-        help=(
-            "Comma list of centers to save: integers and/or keywords "
-            "'stim','det'. Example: 'stim,det,120,135'"
-        ),
-    )
-    p.add_argument(
-        "--save-dir",
-        type=Path,
-        default=Path("out/debug"),
-        help="Directory for saved debug frames",
-    )
-
     return p.parse_args()
 
 
@@ -760,7 +731,7 @@ def main() -> None:
 
     # parameters
     debug = True
-    max_frames = 150
+    max_frames = 5000
     baseline_frames = 8
     sat_drop = 25.0
     diff_thresh = 18.0
