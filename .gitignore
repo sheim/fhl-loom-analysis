@@ -11,3 +11,6 @@ wheels/
 videos/
 uv.lock
 .python-version
+
+*.png
+*.csv

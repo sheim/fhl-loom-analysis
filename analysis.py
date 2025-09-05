@@ -4,6 +4,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+plt.rcParams.update(
+    {
+        "font.size": 24,  # default text size
+        "axes.titlesize": 18,  # title size
+        "axes.labelsize": 18,  # x/y label size
+        "xtick.labelsize": 18,  # x tick labels
+        "ytick.labelsize": 18,  # y tick labels
+        "legend.fontsize": 18,  # legend
+    }
+)
+
 FPS = 240.0
 
 CIRCLE_CSV = Path("batch_results_circle.csv")
@@ -49,7 +60,7 @@ plt.bar(
     circle_counts,
     width=width,
     label="circle",
-    color="tab:blue",
+    color=[231.0 / 256, 50 / 256, 247 / 256],
     align="center",
 )
 plt.bar(
@@ -57,7 +68,7 @@ plt.bar(
     fixed_counts,
     width=width,
     label="fixed_fins",
-    color="tab:orange",
+    color=[115 / 256, 248 / 256, 75 / 256],
     align="center",
 )
 plt.bar(
@@ -65,13 +76,13 @@ plt.bar(
     flapping_counts,
     width=width,
     label="flapping",
-    color="tab:green",
+    color=[230 / 256, 50 / 256, 35 / 256],
     align="center",
 )
 
-plt.xlabel("Latency (s)")
+plt.xlabel("Timing (s)")
 plt.ylabel("Count")
-plt.title("Response Latency by Stimulus Type (side-by-side)")
+plt.title("Shiner Response Timing by Stimulus Type")
 plt.legend()
 plt.tight_layout()
 plt.savefig(OUT_FIG, dpi=150)
