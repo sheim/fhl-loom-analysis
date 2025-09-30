@@ -17,26 +17,25 @@ plt.rcParams.update(
 
 FPS = 240.0
 
-CIRCLE_CSV = Path("batch_results_circle.csv")
-FIXED_FINS_CSV = Path("batch_results_fixed_fins.csv")
-FLAPPING_CSV = Path("batch_results_flapping.csv")
-OUT_FIG = Path("latency_histograms_side_by_side.png")
+CIRCLE_CSV = Path("sculpin_circle_results.csv")
+FIXED_FINS_CSV = Path("sculpin_fixed_results.csv")
+FLAPPING_CSV = Path("sculpin_flapping_results.csv")
+OUT_FIG = Path("sculpin_latency_histograms_side_by_side.png")
 
 
 def load_csv_np(path: Path):
-    data = np.genfromtxt(
-        str(path), delimiter=",", skip_header=1, dtype=None, encoding=None
-    )
-    stim = data["f1"].astype(np.int64)
-    final = data["f2"].astype(np.int64)
+    data = np.genfromtxt(str(path), delimiter=",", skip_header=1, dtype=int)
+
+    stim = data[:, 1]
+    final = data[:, 2]
     latency_frames = final - stim
     latency_seconds = latency_frames / FPS
-    return latency_seconds
+    return latency_seconds, data[:, 0]
 
 
-circle_secs = load_csv_np(CIRCLE_CSV)
-fixed_secs = load_csv_np(FIXED_FINS_CSV)
-flapping_secs = load_csv_np(FLAPPING_CSV)
+circle_secs, circle_trials = load_csv_np(CIRCLE_CSV)
+fixed_secs, fixed_trials = load_csv_np(FIXED_FINS_CSV)
+flapping_secs, flapping_trials = load_csv_np(FLAPPING_CSV)
 
 # Common binning
 all_secs = np.concatenate([circle_secs, fixed_secs, flapping_secs])
@@ -60,7 +59,6 @@ plt.bar(
     circle_counts,
     width=width,
     label="circle",
-    color=[231.0 / 256, 50 / 256, 247 / 256],
     align="center",
 )
 plt.bar(
@@ -68,7 +66,6 @@ plt.bar(
     fixed_counts,
     width=width,
     label="fixed_fins",
-    color=[115 / 256, 248 / 256, 75 / 256],
     align="center",
 )
 plt.bar(
@@ -76,16 +73,29 @@ plt.bar(
     flapping_counts,
     width=width,
     label="flapping",
-    color=[230 / 256, 50 / 256, 35 / 256],
     align="center",
 )
 
 plt.xlabel("Timing (s)")
 plt.ylabel("Count")
-plt.title("Shiner Response Timing by Stimulus Type")
+plt.title("Sculpin Response Timing by Stimulus Type")
 plt.legend()
 plt.tight_layout()
-plt.savefig(OUT_FIG, dpi=150)
+# plt.savefig(OUT_FIG, dpi=150)
 plt.show()
 
-OUT_FIG
+
+# nice print of trial number and timing, split by stimulus type
+def print_timings(label, timings, trial_number):
+    print(f"{label}:")
+    for i, t in enumerate(timings):
+        print(f"  Trial {trial_number[i]}: {t:.3f} s")
+    mean_t = np.mean(timings)
+    std_t = np.std(timings)
+    print(f"  Mean: {mean_t:.3f} s, Std: {std_t:.3f} s")
+    print()
+
+
+print_timings("Circle", circle_secs, circle_trials)
+print_timings("Fixed Fins", fixed_secs, fixed_trials)
+print_timings("Flapping", flapping_secs, flapping_trials)

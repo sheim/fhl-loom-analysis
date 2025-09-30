@@ -1,24 +1,4 @@
 #!/usr/bin/env python3
-"""
-Analyze high-speed videos:
-  1) Detect stimulus onset via colored rectangle disappearance (ROI #1).
-  2) Detect fish first movement via temporal-kernel energy (ROI #2).
-
-Features:
-- Two-click ROI selection.
-- Temporal derivative-like kernel (odd, zero-sum), e.g., diff3/diff5/diff7.
-- Pre-stim baseline to set threshold = mean + sigma*std.
-- Subsampling: compute per-frame but record/evaluate every N frames.
-- Optional live viz: processed ROI, |response|, energy bar vs threshold.
-- Plot & CSV export of energy vs frame.
-- Save debug frames with prefix naming.
-
-Quick start:
-  python analyze_fish_energy.py videos/trial01.mp4 --show \
-    --kernel diff7 --stride 5 --viz-roi --viz-every 5 \
-    --plot out/energy.png --csv out/energy.csv \
-    --save-frames stim,det
-"""
 
 import argparse
 import csv
@@ -28,10 +8,11 @@ from collections import deque
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+# import time
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-
+import math
 
 # ----------------------- CLI ------------------------------------------
 
@@ -171,6 +152,32 @@ def preprocess_gray_smooth(
         return apply_spatial_smoothing(g, smooth, smooth_ksize, smooth_sigma)
 
 
+def playback_video(cap, fps=30, window_name="Playback"):
+    native_fps = cap.get(cv2.CAP_PROP_FPS)
+    if native_fps <= 0:  # fallback
+        native_fps = 30.0
+
+    step = max(1, int(round(native_fps / fps)))
+
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
+    frame_idx = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+
+        if frame_idx % step == 0:
+            cv2.imshow(window_name, frame)
+            if cv2.waitKey(int(1000 / fps)) & 0xFF == ord("q"):
+                break
+
+        frame_idx += 1
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # rewind
+    cv2.destroyWindow(window_name)
+
+
 # ----------------------- Stimulus detection ---------------------------
 
 
@@ -200,7 +207,7 @@ def find_stimulus(
     base_sat: float,
     base_bgr: np.ndarray,
     max_frames: int,
-    sat_drop: float,
+    saturation_drop: float,
     diff_thresh: float,
     show: bool,
 ) -> Optional[int]:
@@ -213,7 +220,7 @@ def find_stimulus(
         r = crop(frame, roi)
         ms = mean_sat(r)
         l2 = l2_gray(r, base_bgr)
-        changed = (base_sat - ms) >= sat_drop or l2 >= diff_thresh
+        changed = (base_sat - ms) >= saturation_drop or l2 >= diff_thresh
         if show:
             vis = frame.copy()
             x, y, w, h = roi
@@ -647,10 +654,114 @@ def make_plot(
         plt.show()
 
 
-def save_debug_frames_temporal(
+def read_gray_at(idx: int, cap, roi) -> Optional[np.ndarray]:
+    cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+    ok, fr = cap.read()
+    if not ok:
+        return None
+    roi_bgr = crop(fr, roi)
+    return roi_bgr
+
+
+def save_debug_grid(
     video_path: Path,
     roi: Tuple[int, int, int, int],
-    centers: List[int],
+    frame_indices: List[int],
+    kernel: np.ndarray,
+    norm: str,
+    out_path: Path,
+    smooth: str = "none",
+    smooth_ksize: int = 3,
+    smooth_sigma: float = 0.8,
+    dpi: int = 180,
+    annotate: bool = True,
+) -> None:
+    """
+    Create a single figure:
+      Row 1: ROI center frames g_t for each requested t (left->right).
+      Row 2: |temporal response| = |R_t| for the same t's.
+
+    Saves to out_path (PNG/PDF/SVG based on extension).
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video: {video_path}")
+
+    if len(kernel) % 2 == 0:
+        raise ValueError("kernel length must be odd")
+    H = len(kernel) // 2
+
+    xs: List[np.ndarray] = []  # ROI center frames (uint8)
+    rs: List[np.ndarray] = []  # |response| images (uint8)
+    ts: List[int] = []  # kept centers
+
+    for t in frame_indices:
+        stack: List[np.ndarray] = []
+        valid = True
+        for j in range(t - H, t + H + 1):
+            g = preprocess_gray_smooth(
+                read_gray_at(j, cap, roi),
+                norm,
+                smooth,
+                smooth_ksize,
+                smooth_sigma,
+            )
+            if g is None:
+                valid = False
+                break
+            stack.append(g)
+        if not valid:
+            continue
+
+        resp = np.zeros_like(stack[0], dtype=np.float32)
+        for wgt, img in zip(kernel, stack):
+            resp += float(wgt) * img
+
+        xs.append(to_u8(stack[H]))
+        rs.append(to_u8(np.abs(resp)))
+        ts.append(t)
+
+    cap.release()
+
+    if not xs:
+        raise RuntimeError("No valid centers to display (all skipped).")
+
+    n = len(xs)
+    figsize = (2.6 * n, 5.2)  # width scales with number of columns
+    fig, axes = plt.subplots(2, n, figsize=figsize)
+
+    # axes shape normalization for n == 1
+    if n == 1:
+        axes = np.array([[axes[0]], [axes[1]]], dtype=object)
+
+    for i in range(n):
+        ax_roi = axes[0, i]
+        ax_rsp = axes[1, i]
+
+        ax_roi.imshow(xs[i], cmap="gray", vmin=0, vmax=255)
+        ax_rsp.imshow(rs[i], cmap="gray", vmin=0, vmax=255)
+
+        if annotate:
+            ax_roi.set_title(f"t={ts[i]}", fontsize=10)
+
+        ax_roi.axis("off")
+        ax_rsp.axis("off")
+
+    axes[0, 0].set_ylabel("ROI", fontsize=10)
+    axes[1, 0].set_ylabel("|R_t|", fontsize=10)
+
+    plt.tight_layout(w_pad=0.2, h_pad=0.4)
+    fig.savefig(str(out_path), dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_debug_frames(
+    video_path: Path,
+    roi: Tuple[int, int, int, int],
+    frame_indices: List[int],
     kernel: np.ndarray,
     norm: str,
     out_dir: Path,
@@ -673,21 +784,15 @@ def save_debug_frames_temporal(
 
     H = len(kernel) // 2
 
-    def read_gray_at(idx: int) -> Optional[np.ndarray]:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ok, fr = cap.read()
-        if not ok:
-            return None
-        roi_bgr = crop(fr, roi)
-        return preprocess_gray_smooth(roi_bgr, norm, smooth, smooth_ksize, smooth_sigma)
-
     x, y, w, h = roi
-    for t in sorted(set(c for c in centers if c is not None and c >= 0)):
+    for t in frame_indices:
         # Build window g_{t-H}..g_{t+H}
         stack: List[np.ndarray] = []
         valid = True
         for j in range(t - H, t + H + 1):
-            g = read_gray_at(j)
+            g = preprocess_gray_smooth(
+                read_gray_at(j, cap, roi), norm, smooth, smooth_ksize, smooth_sigma
+            )
             if g is None:
                 valid = False
                 break
@@ -704,17 +809,29 @@ def save_debug_frames_temporal(
         ok, full = cap.read()
         if not ok:
             continue
-        cv2.rectangle(full, (x, y), (x + w, y + h), (0, 255, 255), 2)
-        cv2.putText(
-            full,
-            f"center={t} E={e:.3g}",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
+
+        fig, axes = plt.subplots(nrows=2, ncols=len(stack))
+        for k, g in enumerate(stack):
+            ax = axes[0, k]
+            idx_abs = t - H + k
+            ax.imshow(g, cmap="gray", vmin=0, vmax=255)
+            ax.set_title(
+                f"idx={idx_abs}",
+                fontsize=9,
+                color=("crimson" if idx_abs == t else "black"),
+            )
+            ax.axis("off")
+        # cv2.rectangle(full, (x, y), (x + w, y + h), (0, 255, 255), 2)
+        # cv2.putText(
+        #     full,
+        #     f"center={t} E={e:.3g}",
+        #     (10, 30),
+        #     cv2.FONT_HERSHEY_SIMPLEX,
+        #     0.8,
+        #     (0, 255, 255),
+        #     2,
+        #     cv2.LINE_AA,
+        # )
         # cv2.imwrite(str(out_dir / f"full_frame_{t:06d}.png"), full)
 
         cv2.imwrite(str(out_dir / f"roi_frame_{t:06d}.png"), to_u8(stack[H]))
@@ -733,7 +850,7 @@ def main() -> None:
     debug = True
     max_frames = 5000
     baseline_frames = 8
-    sat_drop = 25.0
+    saturation_drop = 25.0
     diff_thresh = 18.0
     show = False
     motion_baseline_n = 40
@@ -768,6 +885,10 @@ def main() -> None:
         sys.exit(1)
 
     # Stimulus ROI & detection
+
+    # playback video once first
+    playback_video(cap, fps=30, window_name="Video " + args.video.name[:-4])
+
     stim_roi = select_roi_click(first, "Stimulus ROI")
     base_sat, base_bgr = build_stim_baseline(cap, first, stim_roi, n=baseline_frames)
     stim_idx = find_stimulus(
@@ -776,7 +897,7 @@ def main() -> None:
         base_sat=base_sat,
         base_bgr=base_bgr,
         max_frames=max_frames,
-        sat_drop=sat_drop,
+        saturation_drop=saturation_drop,
         diff_thresh=diff_thresh,
         show=show,
     )
@@ -810,20 +931,6 @@ def main() -> None:
     # 2) Coarse scan (fast, with stride)
     scan_start = stim_idx + H
     scan_end = scan_start + motion_max_frames - 1
-    # idxs, vals, det_idx = scan_temporal(
-    #     cap=cap,
-    #     roi=fish_roi,
-    #     center_start=scan_start,
-    #     center_end=scan_end,
-    #     kernel=kernel,
-    #     norm=norm,
-    #     thr=thr,
-    #     min_run=min_run,
-    #     stride=stride,
-    #     viz=viz_roi,
-    #     viz_scale=viz_scale,
-    #     viz_every=viz_every,
-    # )
 
     idxs, vals, thr, det_idx = track_energy_temporal(
         cap=cap,
@@ -881,37 +988,63 @@ def main() -> None:
     if det_idx is None:
         print("No movement detected within scan window.")
     else:
-        print(f"Coarse first-movement (center): {det_idx}")
-        print(f"Refined first-movement (center): {final_det_idx}")
+        print(f"Coarse first-movement frame: {det_idx}")
+        print(f"Refined first-movement frame: {final_det_idx}")
 
     # CSV/plot (keep coarse series for speed; plot refined marker)
     case_name = args.video.parent.name + args.video.name[:-4]
 
-    save_csv(Path("out/" + case_name + "_energy.csv"), idxs, vals)
-    print(f"Saved CSV: out/" + case_name + "_energy.csv")
+    # save_csv(Path("out/" + case_name + "_energy.csv"), idxs, vals)
+    # print(f"Saved CSV: out/" + case_name + "_energy.csv")
     plot_name = "out/" + case_name + ".png"
     make_plot(idxs, vals, thr, stim_idx, final_det_idx, Path(plot_name))
 
     # Debug frame saving
 
     if debug:
-        targets: List[int] = []
-        if stim_idx is not None:
-            targets.append(stim_idx)
+        frame_indices: List[int] = []
+        # if stim_idx is not None:
+        #     frame_indices.append(stim_idx)
         if final_det_idx is not None:
-            targets.extend(range(max(0, final_det_idx - 5), final_det_idx + 5))
-        save_debug_frames_temporal(
-            video_path=args.video,
-            roi=fish_roi,
-            centers=targets,
-            kernel=kernel,
-            norm=norm,
-            smooth=smooth,
-            smooth_ksize=smooth_ksize,
-            smooth_sigma=smooth_sigma,
-            out_dir="out/debug/" + case_name,
-        )
-        print("Saved debug frames to: out/debug" + case_name)
+            frame_indices.extend(range(max(0, final_det_idx - 5), final_det_idx + 5))
+
+        # save_debug_panels(
+        #     video_path=args.video,
+        #     roi=fish_roi,
+        #     frame_indices=frame_indices,
+        #     kernel=kernel,
+        #     norm=norm,
+        #     smooth=smooth,
+        #     smooth_ksize=smooth_ksize,
+        #     smooth_sigma=smooth_sigma,
+        #     out_dir="out/debug/panels/" + case_name,
+        # )
+
+        # save_debug_grid(
+        #     video_path=args.video,
+        #     roi=fish_roi,
+        #     frame_indices=frame_indices,
+        #     kernel=kernel,
+        #     norm=norm,
+        #     smooth=smooth,
+        #     smooth_ksize=smooth_ksize,
+        #     smooth_sigma=smooth_sigma,
+        #     out_path=Path("out/debug/grid/" + case_name + "_grid.png"),
+        #     dpi=180,
+        # )
+
+        # save_debug_frames(
+        #     video_path=args.video,
+        #     roi=fish_roi,
+        #     frame_indices=frame_indices,
+        #     kernel=kernel,
+        #     norm=norm,
+        #     smooth=smooth,
+        #     smooth_ksize=smooth_ksize,
+        #     smooth_sigma=smooth_sigma,
+        #     out_dir="out/debug/" + case_name,
+        # )
+        # print("Saved debug frames to: out/debug" + case_name)
 
 
 if __name__ == "__main__":
