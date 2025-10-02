@@ -1,101 +1,138 @@
-# Re-run after environment reset: reload libraries and files, then produce side-by-side histogram
+# Save separate histograms for sculpin and shiner with shared axes
 
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+from typing import Dict, Tuple
 
 plt.rcParams.update(
     {
-        "font.size": 24,  # default text size
-        "axes.titlesize": 18,  # title size
-        "axes.labelsize": 18,  # x/y label size
-        "xtick.labelsize": 18,  # x tick labels
-        "ytick.labelsize": 18,  # y tick labels
-        "legend.fontsize": 18,  # legend
+        "font.size": 24,
+        "axes.titlesize": 18,
+        "axes.labelsize": 18,
+        "xtick.labelsize": 18,
+        "ytick.labelsize": 18,
+        "legend.fontsize": 18,
     }
 )
 
 FPS = 240.0
-
-CIRCLE_CSV = Path("sculpin_circle_results.csv")
-FIXED_FINS_CSV = Path("sculpin_fixed_results.csv")
-FLAPPING_CSV = Path("sculpin_flapping_results.csv")
-OUT_FIG = Path("sculpin_latency_histograms_side_by_side.png")
+CONDITIONS = ("circle", "fixed", "flapping")
+CSV_TEMPL = "{species}_{cond}_results.csv"
 
 
-def load_csv_np(path: Path):
-    data = np.genfromtxt(str(path), delimiter=",", skip_header=1, dtype=int)
+def load_csv_np(path: Path) -> Tuple[np.ndarray, np.ndarray]:
+    data = np.genfromtxt(str(path), delimiter=",", skip_header=1, dtype=float)
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
 
-    stim = data[:, 1]
-    final = data[:, 2]
+    stim = data[:, 1].astype(int)
+    final = data[:, 2].astype(int)
     latency_frames = final - stim
     latency_seconds = latency_frames / FPS
-    return latency_seconds, data[:, 0]
+    trial_ids = data[:, 0].astype(int)
+    return latency_seconds, trial_ids
 
 
-circle_secs, circle_trials = load_csv_np(CIRCLE_CSV)
-fixed_secs, fixed_trials = load_csv_np(FIXED_FINS_CSV)
-flapping_secs, flapping_trials = load_csv_np(FLAPPING_CSV)
-
-# Common binning
-all_secs = np.concatenate([circle_secs, fixed_secs, flapping_secs])
-lo = float(np.min(all_secs))
-hi = float(np.max(all_secs))
-bins = np.linspace(lo, hi + 1e-9, 25)
-
-# Compute counts
-circle_counts, _ = np.histogram(circle_secs, bins=bins)
-fixed_counts, _ = np.histogram(fixed_secs, bins=bins)
-flapping_counts, _ = np.histogram(flapping_secs, bins=bins)
-
-# Bar centers and width
-centers = (bins[:-1] + bins[1:]) / 2
-width = (bins[1] - bins[0]) / 4.0
-
-# Plot side-by-side bars
-plt.figure(figsize=(9, 5))
-plt.bar(
-    centers - width,
-    circle_counts,
-    width=width,
-    label="circle",
-    align="center",
-)
-plt.bar(
-    centers,
-    fixed_counts,
-    width=width,
-    label="fixed_fins",
-    align="center",
-)
-plt.bar(
-    centers + width,
-    flapping_counts,
-    width=width,
-    label="flapping",
-    align="center",
-)
-
-plt.xlabel("Timing (s)")
-plt.ylabel("Count")
-plt.title("Sculpin Response Timing by Stimulus Type")
-plt.legend()
-plt.tight_layout()
-# plt.savefig(OUT_FIG, dpi=150)
-plt.show()
+def load_species(species: str) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    out = {}
+    for cond in CONDITIONS:
+        fname = (
+            f"{species}_{cond}_results.csv"
+            if cond != "fixed"
+            else f"{species}_fixed_results.csv"
+        )
+        path = Path(fname)
+        if not path.exists():
+            print(f"[skip] missing file: {path}")
+            continue
+        secs, trials = load_csv_np(path)
+        out[cond] = (secs, trials)
+    return out
 
 
-# nice print of trial number and timing, split by stimulus type
-def print_timings(label, timings, trial_number):
-    print(f"{label}:")
-    for i, t in enumerate(timings):
-        print(f"  Trial {trial_number[i]}: {t:.3f} s")
-    mean_t = np.mean(timings)
-    std_t = np.std(timings)
-    print(f"  Mean: {mean_t:.3f} s, Std: {std_t:.3f} s")
-    print()
+def all_latencies(groups):
+    arrs = []
+    for g in groups:
+        for secs, _ in g.values():
+            if secs.size:
+                arrs.append(secs)
+    if not arrs:
+        raise RuntimeError("No data found across all species/conditions.")
+    return np.concatenate(arrs)
 
 
-print_timings("Circle", circle_secs, circle_trials)
-print_timings("Fixed Fins", fixed_secs, fixed_trials)
-print_timings("Flapping", flapping_secs, flapping_trials)
+def make_bins(values: np.ndarray, nbins: int = 25) -> np.ndarray:
+    lo = float(np.min(values))
+    hi = float(np.max(values))
+    if np.isclose(lo, hi):
+        eps = 1e-6 if lo == 0 else abs(lo) * 1e-6
+        lo -= eps
+        hi += eps
+    return np.linspace(lo, hi + 1e-12, nbins)
+
+
+def plot_species(
+    species: str,
+    data: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    bins: np.ndarray,
+    ymax: int,
+    out_path: Path,
+) -> None:
+    centers = (bins[:-1] + bins[1:]) / 2
+    width = (bins[1] - bins[0]) / 4.0
+
+    offsets = {"circle": -width, "fixed": 0.0, "flapping": +width}
+    labels = {"circle": "circle", "fixed": "fixed_fins", "flapping": "flapping"}
+
+    plt.figure(figsize=(9, 5))
+    for cond in CONDITIONS:
+        if cond not in data:
+            continue
+        secs = data[cond][0]
+        counts, _ = np.histogram(secs, bins=bins)
+        plt.bar(
+            centers + offsets[cond],
+            counts,
+            width=width,
+            label=labels[cond],
+            align="center",
+        )
+
+    plt.xlabel("Timing (s)")
+    plt.ylabel("Count")
+    plt.title(f"{species.capitalize()} response timing")
+    plt.ylim(0, ymax * 1.1 if ymax > 0 else 1)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+
+
+def main() -> None:
+    sculpin = load_species("sculpin")
+    sculpin_NR = load_species("sculpin_NR")
+    shiner = load_species("shiner")
+
+    groups = [g for g in (sculpin, sculpin_NR, shiner) if g]
+    if not groups:
+        raise SystemExit("No data files found for sculpin or shiner.")
+
+    # Common bins and global ymax for consistent axes
+    all_secs = all_latencies(groups)
+    bins = make_bins(all_secs, nbins=25)
+
+    ymax = 0
+    for g in groups:
+        for cond, (secs, _) in g.items():
+            counts, _ = np.histogram(secs, bins=bins)
+            ymax = max(ymax, int(np.max(counts)) if counts.size else 0)
+
+    if sculpin:
+        plot_species("sculpin", sculpin, bins, ymax, Path("sculpin_latency_hist.pdf"))
+    if shiner:
+        plot_species("shiner", shiner, bins, ymax, Path("shiner_latency_hist.pdf"))
+
+
+if __name__ == "__main__":
+    main()
