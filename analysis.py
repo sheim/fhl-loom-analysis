@@ -21,6 +21,23 @@ CONDITIONS = ("circle", "fixed", "flapping")
 CSV_TEMPL = "{species}_{cond}_results.csv"
 
 
+def summarize_stats(
+    species: str, data: Dict[str, Tuple[np.ndarray, np.ndarray]]
+) -> Dict[str, Tuple[float, float]]:
+    """Compute mean and std of latencies for each condition."""
+    stats = {}
+    for cond, (secs, _) in data.items():
+        if secs.size:
+            mean = float(np.mean(secs))
+            std = float(np.std(secs, ddof=1))
+            stats[cond] = (mean, std)
+            print(f"{species:8s} - {cond:9s}: mean={mean:.3f} s, std={std:.3f} s")
+        else:
+            stats[cond] = (np.nan, np.nan)
+            print(f"{species:8s} - {cond:9s}: no data")
+    return stats
+
+
 def load_csv_np(path: Path) -> Tuple[np.ndarray, np.ndarray]:
     data = np.genfromtxt(str(path), delimiter=",", skip_header=1, dtype=float)
     if data.ndim == 1:
@@ -78,6 +95,7 @@ def plot_species(
     bins: np.ndarray,
     ymax: int,
     out_path: Path,
+    stats: Dict[str, Tuple[float, float]],
 ) -> None:
     centers = (bins[:-1] + bins[1:]) / 2
     width = (bins[1] - bins[0]) / 4.0
@@ -91,11 +109,15 @@ def plot_species(
             continue
         secs = data[cond][0]
         counts, _ = np.histogram(secs, bins=bins)
+
+        mean, std = stats.get(cond, (np.nan, np.nan))
+        label = f"{labels[cond]} (μ={mean:.3f}, σ={std:.3f})"
+
         plt.bar(
             centers + offsets[cond],
             counts,
             width=width,
-            label=labels[cond],
+            label=label,
             align="center",
         )
 
@@ -114,7 +136,7 @@ def main() -> None:
     sculpin_NR = load_species("sculpin_NR")
     shiner = load_species("shiner")
 
-    groups = [g for g in (sculpin, sculpin_NR, shiner) if g]
+    groups = [g for g in (sculpin, shiner) if g]
     if not groups:
         raise SystemExit("No data files found for sculpin or shiner.")
 
@@ -129,9 +151,26 @@ def main() -> None:
             ymax = max(ymax, int(np.max(counts)) if counts.size else 0)
 
     if sculpin:
-        plot_species("sculpin", sculpin, bins, ymax, Path("sculpin_latency_hist.pdf"))
+        stats = summarize_stats("sculpin", sculpin)
+        plot_species(
+            "sculpin", sculpin, bins, ymax, Path("sculpin_latency_hist.pdf"), stats
+        )
     if shiner:
-        plot_species("shiner", shiner, bins, ymax, Path("shiner_latency_hist.pdf"))
+        stats = summarize_stats("shiner", shiner)
+        plot_species(
+            "shiner", shiner, bins, ymax, Path("shiner_latency_hist.pdf"), stats
+        )
+
+    if sculpin_NR:
+        stats = summarize_stats("sculpin no-reuse", sculpin_NR)
+        plot_species(
+            "sculpin no-reuse",
+            sculpin_NR,
+            bins,
+            ymax,
+            Path("sculpin_NR_latency_hist.pdf"),
+            stats,
+        )
 
 
 if __name__ == "__main__":
