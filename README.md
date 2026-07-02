@@ -122,20 +122,28 @@ The `annotations/*.json` files are hand-made and **version-controlled** (unlike 
 
 ### 4. `batch.py` — batch runner
 
-Runs the analyzer over every video in a folder and writes one CSV named after the folder.
-Results come from `analyze_video()`'s return value — no stdout scraping — and
-unreadable/cancelled clips are skipped, not fatal.
+Runs the analyzer over a **folder or a single video file** and writes one CSV. Results come
+from `analyze_video()`'s return value — no stdout scraping — and unreadable/cancelled clips are
+skipped, not fatal. Each line prints the threshold `thr`, the peak scan energy `Emax`, and the
+effective `sigma`, so you can tune from the terminal (add `--show` to pop the energy plot).
 
 ```bash
 # Headless once annotated (recommended):
 uv run batch.py videos/Shiner_SloMo/circle --from-annotations
 #  → circle_results.csv   with header:  filename,stim_idx,final_det_idx
 
-# Interactive (selects ROIs per video), with tuning:
-uv run batch.py videos/Shiner_SloMo/circle --energy-sigma 5 --stride 5
-uv run batch.py videos/Shiner_SloMo/circle --from-annotations --update-annotations  # refresh cache
+# Re-run ONE clip to tune detection (annotation untouched until --update-annotations):
+uv run batch.py videos/Sculpin_SloMo/flapping/48.MP4 --from-annotations --energy-sigma 8 --show
+uv run batch.py videos/Sculpin_SloMo/flapping/48.MP4 --from-annotations --energy-sigma 8 --update-annotations
 uv run batch.py --help                                                              # all flags
 ```
+
+**Parameter precedence.** With `--from-annotations`, effective params =
+`AnalysisParams` defaults ← the clip's **saved params** (its annotation's `results.params`) ←
+any flag you pass (a passed flag always wins). So per-clip tuning persists in the JSON once you
+save it with `--update-annotations`. Note the annotation's `annotation` block (ROIs, `detected_blip`)
+and `results.params` are **inputs**; `results.stim_idx`/`det_*` are recomputed **outputs** —
+editing those by hand has no effect.
 
 To feed `analysis.py`, rename the output to the species-prefixed name it expects, e.g.
 `circle_results.csv` → `shiner_circle_results.csv`.

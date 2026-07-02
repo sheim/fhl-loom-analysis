@@ -7,16 +7,19 @@ video in a folder, writing ``<folder>_results.csv`` (schema: ``filename,stim_idx
 final_det_idx``) plus an optional per-video energy plot under ``out/``.
 
 Replaces the old stdout-scraping ``batch_analyze.sh``: results come straight from
-``analyze_video()``'s return value, so there is no fragile text parsing. ROIs are still
-selected interactively per video for now (saved/reused ROIs arrive in milestone M2).
+``analyze_video()``'s return value, so there is no fragile text parsing. The target may be a
+folder (whole condition) or a single video file (re-run one clip). With ``--from-annotations``
+it reads saved ROIs and runs headless; combine with the tuning flags to sweep parameters.
 
 Usage:
-    uv run batch.py videos/Shiner_SloMo/circle
-    uv run batch.py videos/Shiner_SloMo/circle --energy-sigma 5 --stride 5
+    uv run batch.py videos/Shiner_SloMo/circle --from-annotations
+    # re-run ONE clip from its annotation with a higher detection threshold:
+    uv run batch.py videos/Sculpin_SloMo/flapping/48.MP4 --from-annotations --energy-sigma 8
 """
 
 import argparse
 import csv
+import dataclasses
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -32,7 +35,9 @@ Roi = Tuple[int, int, int, int]
 def parse_args() -> argparse.Namespace:
     d = afe.AnalysisParams()
     p = argparse.ArgumentParser(description="Batch fish-escape analyzer.")
-    p.add_argument("folder", type=Path, help="Folder of videos to process")
+    p.add_argument(
+        "folder", type=Path, help="Folder of videos, or a single video file (re-run one clip)"
+    )
     p.add_argument(
         "-o",
         "--out-csv",
@@ -41,7 +46,11 @@ def parse_args() -> argparse.Namespace:
         help="Results CSV (default: <folder-name>_results.csv in CWD)",
     )
     p.add_argument(
-        "--no-plots", action="store_true", help="Skip per-video energy plots"
+        "--no-plots", action="store_true", help="Skip saving per-video energy plots"
+    )
+    p.add_argument(
+        "--show", action="store_true",
+        help="Pop up the energy plot interactively (blocks until closed) - handy for tuning",
     )
     p.add_argument(
         "--from-annotations",
@@ -53,41 +62,64 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Write the computed stim_idx/det back into each video's annotation cache",
     )
-    # Tunable parameters (defaults mirror AnalysisParams)
-    p.add_argument("--baseline-frames", type=int, default=d.baseline_frames)
-    p.add_argument("--sat-drop", type=float, default=d.saturation_drop)
-    p.add_argument("--diff-thresh", type=float, default=d.diff_thresh)
-    p.add_argument("--motion-baseline-n", type=int, default=d.motion_baseline_n)
-    p.add_argument("--energy-sigma", type=float, default=d.energy_sigma)
-    p.add_argument("--min-run", type=int, default=d.min_run)
-    p.add_argument("--motion-max-frames", type=int, default=d.motion_max_frames)
-    p.add_argument("--norm", choices=["none", "zscore", "clahe"], default=d.norm)
-    p.add_argument("--stride", type=int, default=d.stride)
-    p.add_argument("--kernel", default=d.kernel)
-    p.add_argument("--smooth", choices=["none", "gaussian", "box"], default=d.smooth)
-    p.add_argument("--smooth-ksize", type=int, default=d.smooth_ksize)
-    p.add_argument("--smooth-sigma", type=float, default=d.smooth_sigma)
-    p.add_argument("--refine-halfwin", type=int, default=d.refine_halfwin)
+    # Tunable parameters. Default None so we can tell which flags you actually passed:
+    # effective params = AnalysisParams defaults <- the clip's saved params (annotation) <-
+    # these flags. A flag you pass always wins; unset flags fall back to the annotation/defaults.
+    p.add_argument("--baseline-frames", type=int, default=None, help=f"(default {d.baseline_frames})")
+    p.add_argument("--sat-drop", type=float, default=None, help=f"(default {d.saturation_drop})")
+    p.add_argument("--diff-thresh", type=float, default=None, help=f"(default {d.diff_thresh})")
+    p.add_argument("--motion-baseline-n", type=int, default=None, help=f"(default {d.motion_baseline_n})")
+    p.add_argument("--energy-sigma", type=float, default=None, help=f"(default {d.energy_sigma})")
+    p.add_argument("--min-run", type=int, default=None, help=f"(default {d.min_run})")
+    p.add_argument("--motion-max-frames", type=int, default=None, help=f"(default {d.motion_max_frames})")
+    p.add_argument("--norm", choices=["none", "zscore", "clahe"], default=None, help=f"(default {d.norm})")
+    p.add_argument("--stride", type=int, default=None, help=f"(default {d.stride})")
+    p.add_argument("--kernel", default=None, help=f"(default {d.kernel})")
+    p.add_argument("--smooth", choices=["none", "gaussian", "box"], default=None, help=f"(default {d.smooth})")
+    p.add_argument("--smooth-ksize", type=int, default=None, help=f"(default {d.smooth_ksize})")
+    p.add_argument("--smooth-sigma", type=float, default=None, help=f"(default {d.smooth_sigma})")
+    p.add_argument("--refine-halfwin", type=int, default=None, help=f"(default {d.refine_halfwin})")
     return p.parse_args()
 
 
-def params_from_args(args: argparse.Namespace) -> afe.AnalysisParams:
-    return afe.AnalysisParams(
-        baseline_frames=args.baseline_frames,
-        saturation_drop=args.sat_drop,
-        diff_thresh=args.diff_thresh,
-        motion_baseline_n=args.motion_baseline_n,
-        energy_sigma=args.energy_sigma,
-        min_run=args.min_run,
-        motion_max_frames=args.motion_max_frames,
-        norm=args.norm,
-        stride=args.stride,
-        kernel=args.kernel,
-        smooth=args.smooth,
-        smooth_ksize=args.smooth_ksize,
-        smooth_sigma=args.smooth_sigma,
-        refine_halfwin=args.refine_halfwin,
-    )
+# CLI dest -> AnalysisParams field name
+_CLI_TO_FIELD = {
+    "baseline_frames": "baseline_frames",
+    "sat_drop": "saturation_drop",
+    "diff_thresh": "diff_thresh",
+    "motion_baseline_n": "motion_baseline_n",
+    "energy_sigma": "energy_sigma",
+    "min_run": "min_run",
+    "motion_max_frames": "motion_max_frames",
+    "norm": "norm",
+    "stride": "stride",
+    "kernel": "kernel",
+    "smooth": "smooth",
+    "smooth_ksize": "smooth_ksize",
+    "smooth_sigma": "smooth_sigma",
+    "refine_halfwin": "refine_halfwin",
+}
+_PARAM_FIELDS = {f.name for f in dataclasses.fields(afe.AnalysisParams)}
+
+
+def resolve_params(
+    args: argparse.Namespace, ann: Optional[anno.Annotation]
+) -> afe.AnalysisParams:
+    """Effective params: ``AnalysisParams`` defaults <- the clip's saved params (its
+    annotation's ``results.params``) <- explicitly-passed CLI flags (a flag you pass wins).
+
+    So per-clip tuning persists in the annotation (write it with ``--update-annotations``),
+    and a one-off ``--energy-sigma`` on the command line still overrides it.
+    """
+    values = dataclasses.asdict(afe.AnalysisParams())
+    if ann is not None and ann.results:
+        stored = ann.results.get("params") or {}
+        values.update({k: v for k, v in stored.items() if k in _PARAM_FIELDS})
+    for dest, field in _CLI_TO_FIELD.items():
+        v = getattr(args, dest)
+        if v is not None:
+            values[field] = v
+    return afe.AnalysisParams(**values)
 
 
 def select_rois(video: Path) -> Optional[Tuple[Roi, Roi]]:
@@ -118,25 +150,29 @@ def select_rois(video: Path) -> Optional[Tuple[Roi, Roi]]:
 
 def main() -> None:
     args = parse_args()
-    folder = args.folder
-    if not folder.is_dir():
-        print(f"Not a directory: {folder}", file=sys.stderr)
+    target = args.folder
+    if target.is_dir():
+        videos = anno.list_videos(target)
+        default_csv = f"{target.name}_results.csv"
+    elif target.is_file():
+        videos = [target]                      # single-clip re-run (e.g. to tune thresholds)
+        default_csv = f"{target.stem}_results.csv"
+    else:
+        print(f"Not a file or directory: {target}", file=sys.stderr)
         sys.exit(1)
 
-    videos = anno.list_videos(folder)
     if not videos:
-        print(f"No videos found in {folder}", file=sys.stderr)
+        print(f"No videos found in {target}", file=sys.stderr)
         sys.exit(2)
 
-    params = params_from_args(args)
-    out_csv = args.out_csv or Path(f"{folder.name}_results.csv")
+    out_csv = args.out_csv or Path(default_csv)
 
     rows: List[Tuple[str, Optional[int], Optional[int]]] = []
     for video in videos:
         print(f"\n=== {video.name} ===")
+        ann = anno.load_annotation(video)
 
         if args.from_annotations:
-            ann = anno.load_annotation(video)
             if ann is None:
                 print("  [skip] no annotation", file=sys.stderr)
                 continue
@@ -153,8 +189,9 @@ def main() -> None:
             if rois is None:
                 continue
             stim_roi, fish_roi = rois
-            detected_blip = "first"
+            detected_blip = ann.annotation.get("detected_blip", "first") if ann else "first"
 
+        params = resolve_params(args, ann)
         try:
             result = afe.analyze_video(video, stim_roi, fish_roi, params)
         except afe.VideoOpenError as e:
@@ -164,22 +201,27 @@ def main() -> None:
         # Report the first-blip reference (corrected for a middle/last detection).
         stim_ref = anno.corrected_stim_idx(result.stim_idx, detected_blip)
         note = f" (detected {result.stim_idx}, blip={detected_blip})" if detected_blip != "first" else ""
-        print(f"  stim_idx={stim_ref}{note}  first_movement={result.final_det_idx}")
+        emax = max(result.energies) if result.energies else float("nan")
+        print(
+            f"  stim_idx={stim_ref}{note}  first_movement={result.final_det_idx}"
+            f"  thr={result.threshold:.3g}  Emax={emax:.3g}  sigma={params.energy_sigma:g}"
+        )
         rows.append((video.name, stim_ref, result.final_det_idx))
 
         if args.update_annotations:
-            ann = anno.load_annotation(video) or anno.Annotation(
-                video=anno.video_rel(video)
+            a = ann or anno.Annotation(video=anno.video_rel(video))
+            a.set_rois(stim_roi, fish_roi)
+            a.annotation.setdefault("detected_blip", detected_blip)
+            a.results = anno.results_dict(
+                result, params, a.annotation.get("detected_blip", "first")
             )
-            ann.set_rois(stim_roi, fish_roi)
-            ann.annotation.setdefault("detected_blip", detected_blip)
-            ann.results = anno.results_dict(
-                result, params, ann.annotation.get("detected_blip", "first")
-            )
-            anno.save_annotation(video, ann)
+            anno.save_annotation(video, a)
 
-        if not args.no_plots and result.centers:
-            plot_path = Path("out") / (afe.default_case_name(video) + ".png")
+        if (not args.no_plots or args.show) and result.centers:
+            plot_path = (
+                None if args.no_plots
+                else Path("out") / (afe.default_case_name(video) + ".png")
+            )
             afe.make_plot(
                 result.centers,
                 result.energies,
@@ -187,6 +229,7 @@ def main() -> None:
                 result.stim_idx,
                 result.final_det_idx,
                 plot_path,
+                show=args.show,
             )
 
     with out_csv.open("w", newline="") as f:

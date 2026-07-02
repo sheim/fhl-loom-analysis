@@ -611,6 +611,7 @@ def make_plot(
     stim_idx: int,
     det_idx: Optional[int],
     out: Optional[Path],
+    show: bool = False,
 ) -> None:
     fig, ax = plt.subplots()
     ax.plot(idxs, vals, label="energy (subsampled)")
@@ -647,9 +648,9 @@ def make_plot(
     if out:
         out.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out, dpi=200)
-        plt.close(fig)
-    else:
+    if show or not out:
         plt.show()
+    plt.close(fig)
 
 
 def read_gray_at(idx: int, cap, roi) -> Optional[np.ndarray]:
