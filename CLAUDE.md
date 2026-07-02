@@ -20,42 +20,41 @@ no API keys. See `README.md` for full usage and `MILESTONES.md` for the refactor
 ```bash
 uv run analyze_fish_energy.py <video.MP4>        # single video (interactive)
 bash  sort_videos.sh videos/Shiner_SloMo         # footage prep (one-time)
-bash  batch_analyze.sh videos/Shiner_SloMo/circle # batch → <folder>_results.csv
+uv run batch.py videos/Shiner_SloMo/circle       # batch → <folder>_results.csv
 uv run analysis.py                               # aggregate CSVs → latency PDFs
 ```
 
 ## Code map
 
-- `analyze_fish_energy.py` (~1050 lines) — **core logic + interactive single-video CLI**. This
-  is the source of truth for stimulus detection (`find_stimulus`), the temporal motion-energy
-  engine (`get_kernel`, `energy_temporal_series`), thresholding/scanning
-  (`compute_threshold_temporal`, `scan_temporal`, `track_energy_temporal`), and plotting/QA.
-- `batch_analyze.sh` — git-tracked batch runner; runs the analyzer per video and scrapes its
-  stdout (`Stimulus frame index:`, `Coarse/Refined first-movement frame:`) into a CSV. If you
-  change those print strings, update this script's `grep`/`awk`.
-- `batch_analyze.py` — untracked, **currently broken** python batch runner that duplicates core
-  logic. Do not treat as working; see README "Known issues".
+- `analyze_fish_energy.py` — **the canonical library + interactive single-video CLI**. The
+  importable entry point is `analyze_video(video, stim_roi, fish_roi, params) -> AnalysisResult`
+  (side-effect-free: no print/GUI/`sys.exit`). Underneath: `find_stimulus` (stimulus onset),
+  the temporal motion-energy engine (`get_kernel`, `energy_temporal_series`), `first_sustained`
+  (pure coarse/refine detector on precomputed arrays), and plotting/QA (`make_plot`,
+  `save_debug_grid`). Parameters live in the `AnalysisParams` dataclass; `main()` is a thin CLI.
+- `batch.py` — batch runner; imports `analyze_fish_energy` and calls `analyze_video()` per
+  video, writing `<folder>_results.csv` (`filename,stim_idx,final_det_idx`). No stdout scraping.
 - `analysis.py` — reads `{species}_{cond}_results.csv` from cwd, computes latency at
   `FPS = 240`, writes `*_latency_hist.pdf`.
 - `sort_videos.sh` — sorts/renames raw `Trial_*.MP4` into condition folders.
 
 ## Important gotchas
 
-- **Requires a display.** ROI selection and viz use `cv2.imshow` + mouse callbacks; nothing
-  runs headless yet. Do not assume batch scripts can run in CI/sandbox.
-- **Do not run the interactive analyzer to "verify" changes** unless a human is present to
-  click ROIs — it will block. Prefer reasoning, targeted reads, and (future) unit tests.
-- **Two batch implementations exist** (`.sh` working, `.py` broken). Don't unify or delete
-  either without confirming the intended direction (tracked in `MILESTONES.md` M0/M1).
-- **Single-video parameters are hard-coded** as locals in `analyze_fish_energy.py:main()`
-  (~lines 849–869); the batch python script exposes the same knobs as CLI flags. Keep this
-  inconsistency in mind when changing defaults.
+- **Requires a display.** ROI selection uses `cv2.imshow` + mouse callbacks; there is no
+  headless mode yet (saved/reused ROIs are M2). Do not assume `batch.py` runs in CI/sandbox.
+- **Do not run the interactive analyzer/`batch.py` to "verify" changes** — they block on ROI
+  clicks. To verify logic, exercise `analyze_video` / `first_sustained` on a synthetic clip or
+  arrays (no GUI), plus `py_compile`/import checks.
+- **Keep the library side-effect-free.** `analyze_video` and its helpers must not `print`,
+  `sys.exit`, or open GUI windows — those belong in the CLI/`batch.py` layer. `select_roi_click`
+  raises `ROISelectionCancelled`; unreadable input raises `VideoOpenError`.
+- **Parameters live in `AnalysisParams`** (defaults reproduce the old hard-coded values). The
+  single-video CLI uses defaults; `batch.py` exposes them as flags. Change defaults in one place.
 - **Data is git-ignored.** `videos/` (~16 GB), `out/`, `*.png`, `*.csv`, `*.pdf` are all
-  ignored. Result CSVs are inputs to `analysis.py` and may contain dirty rows (negative
-  `stim_idx`, stray whitespace) — validate before trusting.
+  ignored. Result CSVs feed `analysis.py` and may contain dirty rows (negative `stim_idx`,
+  stray whitespace) — validate before trusting (M4).
 - `analysis.py` expects species-prefixed CSV names (e.g. `shiner_circle_results.csv`), but
-  `batch_analyze.sh` emits folder-named ones (`circle_results.csv`) — a manual rename bridges
-  them today.
+  `batch.py` emits folder-named ones (`circle_results.csv`) — a manual rename bridges them today.
 
 ## Conventions
 

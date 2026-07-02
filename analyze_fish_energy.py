@@ -5,6 +5,7 @@ import csv
 import re
 import sys
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -12,7 +13,63 @@ from typing import List, Optional, Tuple
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import math
+
+
+# ----------------------- Config & result types -----------------------
+
+
+class VideoOpenError(Exception):
+    """Raised when a video cannot be opened or is empty."""
+
+
+class ROISelectionCancelled(Exception):
+    """Raised when the user cancels interactive ROI selection."""
+
+
+@dataclass
+class AnalysisParams:
+    """Tunable parameters for stimulus + first-movement detection.
+
+    Defaults reproduce the previous hard-coded single-video behaviour.
+    """
+
+    # Stimulus detection
+    baseline_frames: int = 8
+    saturation_drop: float = 25.0
+    diff_thresh: float = 18.0
+    stim_max_frames: int = 5000
+    # Motion energy & detection
+    motion_baseline_n: int = 40
+    energy_sigma: float = 5.0
+    min_run: int = 2
+    motion_max_frames: int = 600
+    norm: str = "zscore"  # 'none' | 'zscore' | 'clahe'
+    stride: int = 5
+    kernel: str = "diff5"
+    # Spatial smoothing
+    smooth: str = "none"  # 'none' | 'gaussian' | 'box'
+    smooth_ksize: int = 5
+    smooth_sigma: float = 1.0
+    # Stride-1 refinement window (± centers); None -> max(2*stride, 50)
+    refine_halfwin: Optional[int] = None
+
+
+@dataclass
+class AnalysisResult:
+    """Outcome of :func:`analyze_video` for one clip."""
+
+    stim_idx: Optional[int]
+    det_coarse: Optional[int]
+    det_refined: Optional[int]
+    threshold: float
+    centers: List[int]
+    energies: List[float]
+
+    @property
+    def final_det_idx(self) -> Optional[int]:
+        """Refined detection if available, else coarse."""
+        return self.det_refined if self.det_refined is not None else self.det_coarse
+
 
 # ----------------------- CLI ------------------------------------------
 
@@ -68,8 +125,7 @@ def select_roi_click(frame: np.ndarray, title: str) -> Tuple[int, int, int, int]
             disp = base.copy()
         elif key == ord("q"):
             cv2.destroyWindow(msg)
-            print("ROI selection cancelled.", file=sys.stderr)
-            sys.exit(2)
+            raise ROISelectionCancelled()
 
 
 # ----------------------- Helpers --------------------------------------
@@ -413,185 +469,26 @@ def energy_temporal_series(
     return centers, energies
 
 
-def track_energy_temporal(
-    cap: cv2.VideoCapture,
-    roi: Tuple[int, int, int, int],
-    stim_idx: int,
-    baseline_n: int,
-    sigma: float,
-    min_run: int,
-    max_scan: int,
-    norm: str,
-    stride: int,
-    kernel: np.ndarray,
-    viz: bool,
-    viz_scale: int,
-    viz_every: int,
-    smooth: str,
-    smooth_ksize: int,
-    smooth_sigma: float,
-) -> Tuple[List[int], List[float], float, Optional[int]]:
-    """
-    Baseline + scan using a zero-sum temporal kernel.
-    Returns (eval_centers, eval_energies, threshold, detected_center).
-    """
-    H = len(kernel) // 2
-    stride = max(1, int(stride))
-
-    # ---- Baseline centers entirely pre-stim (keep H margin)
-    base_end = stim_idx - 1 - H
-    base_start = base_end - (baseline_n - 1)
-    base_start = max(base_start, H)
-    if base_start > base_end:
-        print("Baseline window too short for temporal kernel.", file=sys.stderr)
-        return [], [], 0.0, None
-
-    b_centers, b_vals = energy_temporal_series(
-        cap=cap,
-        roi=roi,
-        center_start=base_start,
-        center_end=base_end,
-        kernel=kernel,
-        norm=norm,
-        smooth=smooth,
-        smooth_ksize=smooth_ksize,
-        smooth_sigma=smooth_sigma,
-        viz=False,
-    )
-    if len(b_vals) < max(5, min_run + 2):
-        print("Not enough baseline centers.", file=sys.stderr)
-        return [], [], 0.0, None
-
-    mu = float(np.mean(b_vals))
-    sd = float(np.std(b_vals)) or 1e-6
-    thr = mu + sigma * sd
-
-    # ---- Scan centers after stim (avoid pre-stim leakage by H)
-    scan_start = stim_idx + H
-    scan_end = scan_start + max_scan - 1
-
-    s_centers, s_vals = energy_temporal_series(
-        cap=cap,
-        roi=roi,
-        center_start=scan_start,
-        center_end=scan_end,
-        kernel=kernel,
-        norm=norm,
-        smooth=smooth,
-        smooth_ksize=smooth_ksize,
-        smooth_sigma=smooth_sigma,
-        viz=viz,
-        viz_scale=viz_scale,
-        viz_every=viz_every,
-        thr=thr,
-    )
-    if not s_centers:
-        return [], [], thr, None
-
-    eval_centers = s_centers[::stride]
-    eval_vals = s_vals[::stride]
-
-    run = 0
-    detected = None
-    for idx, e in zip(eval_centers, eval_vals):
-        over = e > thr
-        run = run + 1 if over else 0
-        if run >= min_run:
-            detected = idx
-            break
-
-    return eval_centers, eval_vals, thr, detected
-
-
-def compute_threshold_temporal(
-    cap: cv2.VideoCapture,
-    roi: Tuple[int, int, int, int],
-    stim_idx: int,
-    baseline_n: int,
-    kernel: np.ndarray,
-    norm: str,
-    min_run: int,
-) -> Tuple[float, float, float, List[int], List[float]]:
-    """
-    Compute baseline threshold (mean + sigma*std is applied later).
-    Returns (mu, sd, thr_dummy=0.0, base_centers, base_vals).
-    We return 0.0 for thr here; caller applies sigma externally.
-    """
-    H = len(kernel) // 2
-    base_end = stim_idx - 1 - H
-    base_start = max(base_end - (baseline_n - 1), H)
-
-    if base_start > base_end:
-        print("Baseline window too short for temporal kernel.", file=sys.stderr)
-        return 0.0, 0.0, 0.0, [], []
-
-    centers, vals = energy_temporal_series(
-        cap=cap,
-        roi=roi,
-        center_start=base_start,
-        center_end=base_end,
-        kernel=kernel,
-        norm=norm,
-        viz=False,
-    )
-    if len(vals) < max(5, min_run + 2):
-        print("Not enough baseline centers.", file=sys.stderr)
-        return 0.0, 0.0, 0.0, [], []
-
-    mu = float(np.mean(vals))
-    sd = float(np.std(vals)) or 1e-6
-    return mu, sd, 0.0, centers, vals
-
-
-def scan_temporal(
-    cap: cv2.VideoCapture,
-    roi: Tuple[int, int, int, int],
-    center_start: int,
-    center_end: int,
-    kernel: np.ndarray,
-    norm: str,
+def first_sustained(
+    centers: List[int],
+    vals: List[float],
     thr: float,
     min_run: int,
-    stride: int,
-    viz: bool = False,
-    viz_scale: int = 2,
-    viz_every: int = 1,
-) -> Tuple[List[int], List[float], Optional[int]]:
-    """
-    Scan [center_start, center_end] using given threshold.
-    Returns (eval_centers, eval_vals, detected_center or None).
-    """
-    if center_end < center_start:
-        return [], [], None
+    stride: int = 1,
+) -> Optional[int]:
+    """First center whose energy stays above ``thr`` for ``min_run`` consecutive
+    (strided) samples, else ``None``.
 
-    centers, vals = energy_temporal_series(
-        cap=cap,
-        roi=roi,
-        center_start=center_start,
-        center_end=center_end,
-        kernel=kernel,
-        norm=norm,
-        viz=viz,
-        viz_scale=viz_scale,
-        viz_every=viz_every,
-        thr=thr,
-    )
-    if not centers:
-        return [], [], None
-
+    Pure: operates on a precomputed energy series, so coarse (stride>1) and refined
+    (stride=1) detection reuse the same in-memory arrays with no video re-reads.
+    """
     stride = max(1, int(stride))
-    eval_centers = centers[::stride]
-    eval_vals = vals[::stride]
-
     run = 0
-    det = None
-    for idx, e in zip(eval_centers, eval_vals):
+    for c, e in zip(centers[::stride], vals[::stride]):
         run = run + 1 if e > thr else 0
         if run >= min_run:
-            det = idx
-            break
-
-    return eval_centers, eval_vals, det
+            return c
+    return None
 
 
 # ----------------------- Plot / CSV -----------------------------------
@@ -840,211 +737,197 @@ def save_debug_frames(
     cap.release()
 
 
-# ----------------------- Main -----------------------------------------
+# ----------------------- Core pipeline (importable) -------------------
+
+
+def analyze_video(
+    video_path: Path,
+    stim_roi: Tuple[int, int, int, int],
+    fish_roi: Tuple[int, int, int, int],
+    params: Optional[AnalysisParams] = None,
+    cap: Optional[cv2.VideoCapture] = None,
+) -> AnalysisResult:
+    """Analyse a single clip given pre-selected ROIs. Side-effect free.
+
+    Detects the stimulus onset (saturation/grayscale change in ``stim_roi``), then the
+    first sustained motion in ``fish_roi`` via temporal-kernel energy. The energy series
+    is computed **once**; coarse (strided) and refined (stride-1) detection run on the
+    in-memory arrays with no video re-reads.
+
+    No printing, GUI, or ``sys.exit``: raises :class:`VideoOpenError` for unreadable
+    input, and returns ``None`` fields when a stage yields nothing (stimulus not found,
+    baseline too short, no movement).
+    """
+    if params is None:
+        params = AnalysisParams()
+
+    owns_cap = cap is None
+    if owns_cap:
+        cap = cv2.VideoCapture(str(video_path))
+    try:
+        if not cap.isOpened():
+            raise VideoOpenError(f"Failed to open video: {video_path}")
+        ok, first = cap.read()
+        if not ok:
+            raise VideoOpenError(f"Empty video: {video_path}")
+
+        kernel = get_kernel(params.kernel)
+        H = len(kernel) // 2
+
+        # --- Stimulus onset ------------------------------------------------
+        base_sat, base_bgr = build_stim_baseline(
+            cap, first, stim_roi, n=params.baseline_frames
+        )
+        stim_idx = find_stimulus(
+            cap=cap,
+            roi=stim_roi,
+            base_sat=base_sat,
+            base_bgr=base_bgr,
+            max_frames=params.stim_max_frames,
+            saturation_drop=params.saturation_drop,
+            diff_thresh=params.diff_thresh,
+            show=False,
+        )
+        if stim_idx is None:
+            return AnalysisResult(None, None, None, float("nan"), [], [])
+
+        # --- Baseline energy -> threshold (computed once) ------------------
+        base_end = stim_idx - 1 - H
+        base_start = max(base_end - (params.motion_baseline_n - 1), H)
+        if base_start > base_end:
+            return AnalysisResult(stim_idx, None, None, float("nan"), [], [])
+
+        _, base_vals = energy_temporal_series(
+            cap=cap,
+            roi=fish_roi,
+            center_start=base_start,
+            center_end=base_end,
+            kernel=kernel,
+            norm=params.norm,
+            smooth=params.smooth,
+            smooth_ksize=params.smooth_ksize,
+            smooth_sigma=params.smooth_sigma,
+            viz=False,
+        )
+        if len(base_vals) < max(5, params.min_run + 2):
+            return AnalysisResult(stim_idx, None, None, float("nan"), [], [])
+
+        mu = float(np.mean(base_vals))
+        sd = float(np.std(base_vals)) or 1e-6
+        thr = mu + params.energy_sigma * sd
+
+        # --- Scan energy after stim (computed once, stride-1) --------------
+        scan_start = stim_idx + H
+        scan_end = scan_start + params.motion_max_frames - 1
+        centers, energies = energy_temporal_series(
+            cap=cap,
+            roi=fish_roi,
+            center_start=scan_start,
+            center_end=scan_end,
+            kernel=kernel,
+            norm=params.norm,
+            smooth=params.smooth,
+            smooth_ksize=params.smooth_ksize,
+            smooth_sigma=params.smooth_sigma,
+            viz=False,
+            thr=thr,
+        )
+
+        # --- Detection on in-memory arrays (coarse then refine) ------------
+        stride = max(1, int(params.stride))
+        det_coarse = first_sustained(centers, energies, thr, params.min_run, stride)
+        det_refined = det_coarse
+        if det_coarse is not None:
+            halfwin = (
+                params.refine_halfwin
+                if params.refine_halfwin is not None
+                else max(2 * stride, 50)
+            )
+            r_start = max(scan_start, det_coarse - halfwin)
+            r_end = min(scan_end, det_coarse + halfwin)
+            sub = [(c, e) for c, e in zip(centers, energies) if r_start <= c <= r_end]
+            if sub:
+                det_ref = first_sustained(
+                    [c for c, _ in sub], [e for _, e in sub], thr, params.min_run, 1
+                )
+                if det_ref is not None:
+                    det_refined = det_ref
+
+        return AnalysisResult(stim_idx, det_coarse, det_refined, thr, centers, energies)
+    finally:
+        if owns_cap:
+            cap.release()
+
+
+# ----------------------- CLI ------------------------------------------
+
+
+def default_case_name(video: Path) -> str:
+    """``<species>_<condition>_<stem>`` — includes the species dir to avoid the old
+    ``out/`` name collision (sculpin & shiner both wrote ``circle34.png``)."""
+    parts = video.resolve().parts
+    cond = parts[-2] if len(parts) >= 2 else ""
+    species = parts[-3] if len(parts) >= 3 else ""
+    prefix = "_".join(p for p in (species, cond) if p)
+    return f"{prefix}_{video.stem}" if prefix else video.stem
 
 
 def main() -> None:
     args = parse_args()
-
-    # parameters
-    debug = True
-    max_frames = 5000
-    baseline_frames = 8
-    saturation_drop = 25.0
-    diff_thresh = 18.0
-    show = False
-    motion_baseline_n = 40
-    energy_sigma = 5.0
-    min_run = 2
-    motion_max_frames = 600
-    norm = "zscore"
-    stride = 5
-    kernel = "diff5"
-    viz_roi = True  # for debugging
-    viz_scale = 2
-    viz_every = 5
-
-    smooth = "none"  # 'none', 'gaussian', or 'box'
-    smooth_ksize = 5  # odd >= 3 recommended (3, 5, 7)
-    smooth_sigma = 1.0  # used for gaussian
-
-    # -----
+    params = AnalysisParams()
 
     if not args.video.exists():
         print(f"Video not found: {args.video}", file=sys.stderr)
         sys.exit(1)
 
+    # --- Interactive ROI acquisition (GUI) -----------------------------
     cap = cv2.VideoCapture(str(args.video))
     if not cap.isOpened():
         print("Failed to open video.", file=sys.stderr)
         sys.exit(1)
-
     ok, first = cap.read()
     if not ok:
         print("Empty video.", file=sys.stderr)
         sys.exit(1)
 
-    # Stimulus ROI & detection
-
-    # playback video once first
-    playback_video(cap, fps=30, window_name="Video " + args.video.name[:-4])
-
-    stim_roi = select_roi_click(first, "Stimulus ROI")
-    base_sat, base_bgr = build_stim_baseline(cap, first, stim_roi, n=baseline_frames)
-    stim_idx = find_stimulus(
-        cap=cap,
-        roi=stim_roi,
-        base_sat=base_sat,
-        base_bgr=base_bgr,
-        max_frames=max_frames,
-        saturation_drop=saturation_drop,
-        diff_thresh=diff_thresh,
-        show=show,
-    )
-    if stim_idx is None:
+    playback_video(cap, fps=30, window_name="Video " + args.video.stem)
+    try:
+        stim_roi = select_roi_click(first, "Stimulus ROI")
+        fish_roi = select_roi_click(first, "Fish ROI")
+    except ROISelectionCancelled:
         cap.release()
+        print("ROI selection cancelled.", file=sys.stderr)
+        sys.exit(2)
+    cap.release()
+
+    # --- Analysis (no GUI) ---------------------------------------------
+    try:
+        result = analyze_video(args.video, stim_roi, fish_roi, params)
+    except VideoOpenError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+    if result.stim_idx is None:
         print("Stimulus not detected.", file=sys.stderr)
         sys.exit(3)
-    print(f"Stimulus frame index: {stim_idx}")
+    print(f"Stimulus frame index: {result.stim_idx}")
 
-    # Fish ROI & temporal energy
-    fish_roi = select_roi_click(first, "Fish ROI")
-    kernel = get_kernel(kernel)
-
-    H = len(kernel) // 2
-
-    # 1) Baseline -> threshold
-    mu, sd, _, base_centers, base_vals = compute_threshold_temporal(
-        cap=cap,
-        roi=fish_roi,
-        stim_idx=stim_idx,
-        baseline_n=motion_baseline_n,
-        kernel=kernel,
-        norm=norm,
-        min_run=min_run,
-    )
-    if not base_vals:
-        cap.release()
-        sys.exit(4)
-    thr = mu + energy_sigma * sd
-
-    # 2) Coarse scan (fast, with stride)
-    scan_start = stim_idx + H
-    scan_end = scan_start + motion_max_frames - 1
-
-    idxs, vals, thr, det_idx = track_energy_temporal(
-        cap=cap,
-        roi=fish_roi,
-        stim_idx=stim_idx,
-        baseline_n=motion_baseline_n,
-        sigma=energy_sigma,
-        min_run=min_run,
-        max_scan=motion_max_frames,
-        norm=norm,
-        stride=stride,
-        kernel=kernel,
-        viz=viz_roi,
-        viz_scale=viz_scale,
-        viz_every=viz_every,
-        smooth=smooth,
-        smooth_ksize=smooth_ksize,
-        smooth_sigma=smooth_sigma,
-    )
-
-    if not idxs:
-        cap.release()
-        print("No energy values computed.", file=sys.stderr)
-        sys.exit(4)
-
-    # 3) Refine scan (exact, stride=1) around coarse detection
-    final_det_idx = det_idx
-    if det_idx is not None:
-        refine_halfwin = max(2 * stride, 50)
-        r_start = max(scan_start, det_idx - refine_halfwin)
-        r_end = min(scan_end, det_idx + refine_halfwin)
-        _, _, det_ref = scan_temporal(
-            cap=cap,
-            roi=fish_roi,
-            center_start=r_start,
-            center_end=r_end,
-            kernel=kernel,
-            norm=norm,
-            thr=thr,
-            min_run=min_run,
-            stride=1,
-            viz=False,
-        )
-        if det_ref is not None:
-            final_det_idx = det_ref
-
-    cap.release()
-
-    cap.release()
-
-    if not idxs:
-        print("No energy values computed.", file=sys.stderr)
-        sys.exit(4)
-
-    if det_idx is None:
+    if result.det_coarse is None:
         print("No movement detected within scan window.")
     else:
-        print(f"Coarse first-movement frame: {det_idx}")
-        print(f"Refined first-movement frame: {final_det_idx}")
+        print(f"Coarse first-movement frame: {result.det_coarse}")
+        print(f"Refined first-movement frame: {result.final_det_idx}")
 
-    # CSV/plot (keep coarse series for speed; plot refined marker)
-    case_name = args.video.parent.name + args.video.name[:-4]
-
-    # save_csv(Path("out/" + case_name + "_energy.csv"), idxs, vals)
-    # print(f"Saved CSV: out/" + case_name + "_energy.csv")
-    plot_name = "out/" + case_name + ".png"
-    make_plot(idxs, vals, thr, stim_idx, final_det_idx, Path(plot_name))
-
-    # Debug frame saving
-
-    if debug:
-        frame_indices: List[int] = []
-        # if stim_idx is not None:
-        #     frame_indices.append(stim_idx)
-        if final_det_idx is not None:
-            frame_indices.extend(range(max(0, final_det_idx - 5), final_det_idx + 5))
-
-        # save_debug_panels(
-        #     video_path=args.video,
-        #     roi=fish_roi,
-        #     frame_indices=frame_indices,
-        #     kernel=kernel,
-        #     norm=norm,
-        #     smooth=smooth,
-        #     smooth_ksize=smooth_ksize,
-        #     smooth_sigma=smooth_sigma,
-        #     out_dir="out/debug/panels/" + case_name,
-        # )
-
-        # save_debug_grid(
-        #     video_path=args.video,
-        #     roi=fish_roi,
-        #     frame_indices=frame_indices,
-        #     kernel=kernel,
-        #     norm=norm,
-        #     smooth=smooth,
-        #     smooth_ksize=smooth_ksize,
-        #     smooth_sigma=smooth_sigma,
-        #     out_path=Path("out/debug/grid/" + case_name + "_grid.png"),
-        #     dpi=180,
-        # )
-
-        # save_debug_frames(
-        #     video_path=args.video,
-        #     roi=fish_roi,
-        #     frame_indices=frame_indices,
-        #     kernel=kernel,
-        #     norm=norm,
-        #     smooth=smooth,
-        #     smooth_ksize=smooth_ksize,
-        #     smooth_sigma=smooth_sigma,
-        #     out_dir="out/debug/" + case_name,
-        # )
-        # print("Saved debug frames to: out/debug" + case_name)
+    if result.centers:
+        out_path = Path("out") / (default_case_name(args.video) + ".png")
+        make_plot(
+            result.centers,
+            result.energies,
+            result.threshold,
+            result.stim_idx,
+            result.final_det_idx,
+            out_path,
+        )
 
 
 if __name__ == "__main__":

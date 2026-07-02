@@ -17,8 +17,8 @@ Pure local processing — NumPy + OpenCV + Matplotlib. No network, no API keys.
 ## Requirements
 
 - Python **≥ 3.13** (pinned via `.python-version`)
-- A **display / GUI** — the analyzer uses `cv2.imshow` + mouse callbacks for ROI selection
-  and cannot currently run headless (see [Known issues](#known-issues--scripts-to-unify)).
+- A **display / GUI** — ROI selection uses `cv2.imshow` + mouse callbacks, so a batch run
+  still prompts for ROIs per video. Headless runs via saved/reused ROIs are milestone M2.
 - Managed with [`uv`](https://docs.astral.sh/uv/) (an `uv.lock` is committed).
 
 ## Install
@@ -50,14 +50,17 @@ Clips are ~240 fps `.MP4` (the analyzer also accepts `.mov/.avi/.mkv`).
 
 ## The pipeline (scripts & commands)
 
-| Script | Language | Role | Status |
-|---|---|---|---|
-| `sort_videos.sh` | bash | Sort/rename raw `Trial_*.MP4` into condition folders | ✅ active (one-time prep) |
-| `analyze_fish_energy.py` | python | Interactive single-video analyzer (core logic) | ✅ active |
-| `batch_analyze.sh` | bash | Batch a folder by scraping analyzer stdout → CSV | ✅ active (git-tracked) |
-| `batch_analyze.py` | python | Batch a folder → per-video outputs + `summary.json` | ⚠️ **broken / untracked** — see below |
-| `analysis.py` | python | Aggregate result CSVs → latency histogram PDFs | ✅ active |
-| `out/plot_latency_hist.py` | python | — | ❌ **dead** (empty 0-byte stub) |
+| Script | Language | Role |
+|---|---|---|
+| `sort_videos.sh` | bash | Sort/rename raw `Trial_*.MP4` into condition folders (one-time prep) |
+| `analyze_fish_energy.py` | python | Core importable library **and** interactive single-video CLI |
+| `batch.py` | python | Batch a folder → `<folder>_results.csv` + per-video plots (imports the library) |
+| `analysis.py` | python | Aggregate result CSVs → latency histogram PDFs |
+
+`analyze_fish_energy.py` is the single source of detection logic. `analyze_video(video,
+stim_roi, fish_roi, params) -> AnalysisResult` is side-effect-free (no printing/GUI/exit);
+both the CLI and `batch.py` call it, and parameters live in one shared `AnalysisParams`
+dataclass.
 
 ### 1. `sort_videos.sh` — footage prep (run once)
 
@@ -72,8 +75,9 @@ bash sort_videos.sh videos/Sculpin_SloMo
 
 ### 2. `analyze_fish_energy.py` — interactive single-video analyzer
 
-The core of the project. Opens one clip, plays it once for orientation, then prompts you to
-draw two ROIs with two mouse clicks each (**stimulus area**, then **fish body**).
+Opens one clip, plays it once for orientation, then prompts you to draw two ROIs with two
+mouse clicks each (**stimulus area**, then **fish body** — place it on the first fish to
+respond).
 
 ```bash
 uv run analyze_fish_energy.py videos/Shiner_SloMo/circle/34.MP4
@@ -81,40 +85,29 @@ uv run analyze_fish_energy.py videos/Shiner_SloMo/circle/34.MP4
 
 - **Input:** one video path (only positional arg).
 - **Stdout:** `Stimulus frame index: N`, `Coarse first-movement frame: N`, `Refined
-  first-movement frame: N` (these lines are what `batch_analyze.sh` scrapes).
-- **Output file:** an energy-vs-frame plot at `out/<condition><stem>.png`
-  (e.g. `out/circle34.png`).
-- **Tuning:** all parameters (thresholds, kernel, stride, smoothing, sigma…) are **hard-coded
-  as locals in `main()`** near the top of the function — edit the source to change them.
+  first-movement frame: N`.
+- **Output file:** an energy-vs-frame plot at `out/<species>_<condition>_<stem>.png`
+  (e.g. `out/Shiner_SloMo_circle_34.png`).
+- **Tuning:** parameters live in the `AnalysisParams` dataclass (defaults reproduce the
+  previous behaviour). The single-video CLI uses the defaults; `batch.py` exposes them as flags.
 
-### 3. `batch_analyze.sh` — shell batch runner (working batch path)
+### 3. `batch.py` — batch runner
 
-Loops over every `*.MP4` in a folder, runs the analyzer on each (you still select ROIs per
-video), scrapes the printed indices, and writes one CSV named after the folder.
+Runs the analyzer over every video in a folder, selecting ROIs interactively per video, and
+writes one CSV named after the folder. Results come from `analyze_video()`'s return value —
+no stdout scraping — and unreadable/cancelled clips are skipped, not fatal.
 
 ```bash
-bash batch_analyze.sh videos/Shiner_SloMo/circle
+uv run batch.py videos/Shiner_SloMo/circle
 #  → circle_results.csv   with header:  filename,stim_idx,final_det_idx
+uv run batch.py videos/Shiner_SloMo/circle --energy-sigma 5 --stride 5   # tune params
+uv run batch.py --help                                                   # all flags
 ```
 
 To feed `analysis.py`, rename the output to the species-prefixed name it expects, e.g.
 `circle_results.csv` → `shiner_circle_results.csv`.
 
-### 4. `batch_analyze.py` — python batch runner (⚠️ currently broken)
-
-Intended as a richer batch runner: same per-video pipeline but with ~15 CLI flags, per-video
-output subfolders (`energy.csv`, `energy.png`, `debug/`), and a top-level `summary.json`.
-
-```bash
-# Intended usage (see Known issues — does not run as-is):
-uv run batch_analyze.py videos/Shiner_SloMo/circle --energy-sigma 5 --stride 50
-```
-
-It **crashes on the first video** today (parameter/name drift against
-`analyze_fish_energy.py`; details in [Known issues](#known-issues--scripts-to-unify)). It is
-also **untracked in git**, whereas `batch_analyze.sh` is committed.
-
-### 5. `analysis.py` — latency aggregation & histograms
+### 4. `analysis.py` — latency aggregation & histograms
 
 Reads per-condition result CSVs from the **current directory**, computes latency
 `= (final_det_idx − stim_idx) / 240`, prints mean/std per condition, and writes grouped-bar
@@ -137,48 +130,24 @@ uv run analysis.py        # or: python analysis.py
 ```bash
 uv sync                                               # 1. install
 bash sort_videos.sh videos/Shiner_SloMo               # 2. prep footage (once)
-bash batch_analyze.sh videos/Shiner_SloMo/circle      # 3. analyze a condition (interactive)
+uv run batch.py videos/Shiner_SloMo/circle            # 3. analyze a condition (interactive)
 mv circle_results.csv shiner_circle_results.csv       # 4. rename for the aggregator
 uv run analysis.py                                    # 5. produce latency histograms
 ```
 
 ---
 
-## Known issues & scripts to unify
+## Status & known limitations
 
-This section is deliberately explicit so we can decide what to deprecate before unifying.
+The M1 refactor unified detection logic into `analyze_fish_energy.py` and replaced the old
+stdout-scraping `batch_analyze.sh` with `batch.py` (both retired; recoverable from git).
+Remaining limitations, tracked in `MILESTONES.md`:
 
-**Definitely dead**
-- `out/plot_latency_hist.py` — empty 0-byte file, fully superseded by `analysis.py`. Safe to
-  delete.
+- **No headless mode yet** — ROI selection needs a GUI; saved/reused ROIs are M2.
+- **No data validation** — some existing result CSVs contain negative `stim_idx` / stray
+  whitespace, and `analysis.py` doesn't reject bad rows (M4).
+- **`analysis.py` expects renamed CSVs** — `batch.py` emits `<folder>_results.csv`; you must
+  rename to the species-prefixed form (e.g. `shiner_circle_results.csv`) it reads.
+- **Gaussian smoothing can trigger premature detection** (noted in git history) — M4.
 
-**Two competing batch runners — pick one to keep**
-- `batch_analyze.sh` (bash) — **git-tracked, works today**. Crude: re-selects ROIs per video
-  and parses the analyzer's stdout with `grep`/`awk`.
-- `batch_analyze.py` (python) — **untracked, currently broken**. Richer design (CLI flags,
-  per-video folders, `summary.json`) but has drifted out of sync with the library:
-  - passes `sat_drop=` to `find_stimulus`, which expects `saturation_drop=`
-    (`batch_analyze.py:273` vs `analyze_fish_energy.py:210`) → `TypeError` on the first video.
-  - calls `afe.save_debug_frames_temporal`, which does not exist (the module defines
-    `save_debug_frames` / `save_debug_grid`) → `AttributeError`.
-  - reimplements `compute_threshold` / `scan_window`, duplicating
-    `analyze_fish_energy.py`'s `compute_threshold_temporal` / `scan_temporal`.
-
-**To empirically confirm status, try each (needs a display + a small test folder):**
-
-```bash
-uv run batch_analyze.py --help          # inspect the intended CLI without running
-uv run batch_analyze.py videos/Shiner_SloMo/circle    # expect it to crash (see above)
-bash  batch_analyze.sh  videos/Shiner_SloMo/circle    # expect a *_results.csv to appear
-```
-
-**Other rough edges**
-- Config is inconsistent: the single-video CLI hard-codes parameters in `main()`; the batch
-  script exposes them as flags.
-- No headless mode (ROI selection requires a GUI).
-- Some committed result CSVs contain negative `stim_idx` and stray whitespace; `analysis.py`
-  does not validate rows.
-- Minor dead code: doubled `cap.release()`, commented-out debug blocks referencing an
-  undefined `save_debug_panels`, unused `import math`.
-
-See `MILESTONES.md` for the plan to address these.
+See `MILESTONES.md` for the full plan.
