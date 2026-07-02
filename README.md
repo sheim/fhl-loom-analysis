@@ -17,8 +17,9 @@ Pure local processing — NumPy + OpenCV + Matplotlib. No network, no API keys.
 ## Requirements
 
 - Python **≥ 3.13** (pinned via `.python-version`)
-- A **display / GUI** — ROI selection uses `cv2.imshow` + mouse callbacks, so a batch run
-  still prompts for ROIs per video. Headless runs via saved/reused ROIs are milestone M2.
+- A **display / GUI** for the one-time **annotation** step (ROI selection uses `cv2.imshow` +
+  mouse callbacks). Once a folder is annotated, analysis re-runs **headless** via
+  `batch.py --from-annotations`.
 - Managed with [`uv`](https://docs.astral.sh/uv/) (an `uv.lock` is committed).
 
 ## Install
@@ -54,7 +55,9 @@ Clips are ~240 fps `.MP4` (the analyzer also accepts `.mov/.avi/.mkv`).
 |---|---|---|
 | `sort_videos.sh` | bash | Sort/rename raw `Trial_*.MP4` into condition folders (one-time prep) |
 | `analyze_fish_energy.py` | python | Core importable library **and** interactive single-video CLI |
-| `batch.py` | python | Batch a folder → `<folder>_results.csv` + per-video plots (imports the library) |
+| `annotate.py` | python | One-time interactive sweep: record ROIs + disposition per video → `annotations/*.json` |
+| `annotations.py` | python | Annotation schema + load/save (imported by `annotate.py` and `batch.py`) |
+| `batch.py` | python | Batch a folder → `<folder>_results.csv`; interactive **or** `--from-annotations` (headless) |
 | `analysis.py` | python | Aggregate result CSVs → latency histogram PDFs |
 
 `analyze_fish_energy.py` is the single source of detection logic. `analyze_video(video,
@@ -91,23 +94,44 @@ uv run analyze_fish_energy.py videos/Shiner_SloMo/circle/34.MP4
 - **Tuning:** parameters live in the `AnalysisParams` dataclass (defaults reproduce the
   previous behaviour). The single-video CLI uses the defaults; `batch.py` exposes them as flags.
 
-### 3. `batch.py` — batch runner
+### 3. `annotate.py` — annotation sweep (do this once per folder)
 
-Runs the analyzer over every video in a folder, selecting ROIs interactively per video, and
-writes one CSV named after the folder. Results come from `analyze_video()`'s return value —
-no stdout scraping — and unreadable/cancelled clips are skipped, not fatal.
+Records, per video, what a human must eyeball — so downstream analysis runs headless. For each
+clip it plays the video, asks a **disposition** (`usable` / `no_response` / `bad_video`), then
+lets you click the **stimulus** and **fish** (first responder) ROIs; it runs the analyzer and
+caches `stim_idx` / `det_refined` alongside the ROIs in a per-video JSON under a git-tracked
+`annotations/` mirror of `videos/` (e.g. `annotations/Shiner_SloMo/circle/34.json`).
 
 ```bash
-uv run batch.py videos/Shiner_SloMo/circle
+uv run annotate.py videos/Shiner_SloMo/circle              # only un-annotated clips (default)
+uv run annotate.py videos/Shiner_SloMo/circle --redo-all   # re-annotate everything
+uv run annotate.py videos/Shiner_SloMo/circle --redo 34.MP4  # re-annotate one clip
+uv run annotate.py videos/Shiner_SloMo/circle --show       # display saved ROIs/results
+```
+
+The `annotations/*.json` files are hand-made and **version-controlled** (unlike the videos).
+
+### 4. `batch.py` — batch runner
+
+Runs the analyzer over every video in a folder and writes one CSV named after the folder.
+Results come from `analyze_video()`'s return value — no stdout scraping — and
+unreadable/cancelled clips are skipped, not fatal.
+
+```bash
+# Headless once annotated (recommended):
+uv run batch.py videos/Shiner_SloMo/circle --from-annotations
 #  → circle_results.csv   with header:  filename,stim_idx,final_det_idx
-uv run batch.py videos/Shiner_SloMo/circle --energy-sigma 5 --stride 5   # tune params
-uv run batch.py --help                                                   # all flags
+
+# Interactive (selects ROIs per video), with tuning:
+uv run batch.py videos/Shiner_SloMo/circle --energy-sigma 5 --stride 5
+uv run batch.py videos/Shiner_SloMo/circle --from-annotations --update-annotations  # refresh cache
+uv run batch.py --help                                                              # all flags
 ```
 
 To feed `analysis.py`, rename the output to the species-prefixed name it expects, e.g.
 `circle_results.csv` → `shiner_circle_results.csv`.
 
-### 4. `analysis.py` — latency aggregation & histograms
+### 5. `analysis.py` — latency aggregation & histograms
 
 Reads per-condition result CSVs from the **current directory**, computes latency
 `= (final_det_idx − stim_idx) / 240`, prints mean/std per condition, and writes grouped-bar
@@ -128,22 +152,24 @@ uv run analysis.py        # or: python analysis.py
 ## End-to-end example
 
 ```bash
-uv sync                                               # 1. install
-bash sort_videos.sh videos/Shiner_SloMo               # 2. prep footage (once)
-uv run batch.py videos/Shiner_SloMo/circle            # 3. analyze a condition (interactive)
-mv circle_results.csv shiner_circle_results.csv       # 4. rename for the aggregator
-uv run analysis.py                                    # 5. produce latency histograms
+uv sync                                                   # 1. install
+bash sort_videos.sh videos/Shiner_SloMo                   # 2. prep footage (once)
+uv run annotate.py videos/Shiner_SloMo/circle             # 3. annotate ROIs once (interactive)
+uv run batch.py videos/Shiner_SloMo/circle --from-annotations  # 4. analyze headless
+mv circle_results.csv shiner_circle_results.csv           # 5. rename for the aggregator
+uv run analysis.py                                        # 6. produce latency histograms
 ```
 
 ---
 
 ## Status & known limitations
 
-The M1 refactor unified detection logic into `analyze_fish_energy.py` and replaced the old
-stdout-scraping `batch_analyze.sh` with `batch.py` (both retired; recoverable from git).
-Remaining limitations, tracked in `MILESTONES.md`:
+M1 unified detection logic into `analyze_fish_energy.py` (replacing the stdout-scraping
+`batch_analyze.sh` with `batch.py`); M2 added per-video annotations so analysis runs headless
+via `batch.py --from-annotations`. Remaining limitations, tracked in `MILESTONES.md`:
 
-- **No headless mode yet** — ROI selection needs a GUI; saved/reused ROIs are M2.
+- **Annotation is still interactive** — the one-time sweep needs a GUI to click ROIs (by
+  design); only the re-runs are headless.
 - **No data validation** — some existing result CSVs contain negative `stim_idx` / stray
   whitespace, and `analysis.py` doesn't reject bad rows (M4).
 - **`analysis.py` expects renamed CSVs** — `batch.py` emits `<folder>_results.csv`; you must

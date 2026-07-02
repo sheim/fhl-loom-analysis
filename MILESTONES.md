@@ -46,13 +46,45 @@ _Batch = new Python runner (recommended over shell — see table in discussion);
 _Verified headlessly (unit tests + synthetic clip: stim@60, refine 89 < coarse 97). Remaining:
 a real-video spot-check by a human, since ROI selection is interactive (◐ until then)._
 
-## M2 — Reusable ROIs  ☐
-Goal: run a first batch sweep that manually identifies the first fish to move, and defines the ROI. This should be saved in a metadata linked to that video, so further analysis scripts can load the right frames/ROIs without reprocessing everything from scratch. Details to be discussed.
+## M2 — Reusable ROIs (per-video annotations)  ◐
+Goal: a one-time manual sweep that records, per video, what a human must eyeball — so all
+downstream analysis loads it and runs **headless** (annotate once, re-run freely). Builds on
+M1's seam (`analyze_video` already takes ROIs as inputs).
+
+**Storage:** one **per-video JSON** in a git-tracked `annotations/` mirror
+(e.g. `annotations/Shiner_SloMo/circle/34.json`) — the videos are git-ignored, but the
+hand-made annotations must be version-controlled. Linked to the clip by **relative path**.
+
+**JSON schema (keep flexible / versioned):**
+- `disposition`: `usable | no_response | bad_video`
+- `annotation`: `stim_roi`, `fish_roi` (first responder) — extensible (M3 adds screen edges, etc.)
+- `results` (stored cache, regenerable): `stim_idx`, `det_refined` (fine-grained), plus the
+  `AnalysisParams` used
+- provenance: `schema_version`, relative `video` path
+
+**Tasks:**
+- ☑ JSON schema + `load/save_annotation()` loader in `annotations.py` (forward-compatible:
+  unknown keys preserved for M3; `results_stale()` flags param drift).
+- ☑ `annotate.py` — interactive sweep (reuses `playback_video` + `select_roi_click`), runs
+  `analyze_video` after ROI selection and caches `stim_idx`/`det_refined` into the JSON.
+  - ☑ default: process only **un-annotated** videos in a folder
+  - ☑ `--redo-all`: re-annotate everything
+  - ☑ `--redo <video>`: re-annotate a specific clip
+  - ☑ `--show`/`--review`: load & display existing annotations (draw saved ROIs on the frame,
+    print `stim_idx`/`det`, warn if stale), no editing
+- ☑ Headless consumption: `batch.py --from-annotations` reads ROIs from annotations and runs
+  with no GUI; `--update-annotations` refreshes the cached results.
+
+_Verified headlessly (annotation round-trip, forward-compat, stale check, and
+`batch --from-annotations` reproducing `analyze_video` on a synthetic clip). Remaining: a real
+interactive annotation sweep by a human (the ROI-clicking part can't be auto-tested) — ◐ until then._
 
 ## M3 — Identify Orientation and Geometries
 Goal: detect the fish position and orientation heading orientation in relation to the loom direction. This will be used to calculate the angle of the loom w.r.t. to the fish, and the effective rate-of-expansion of the silhouette.
 Note the loom screen is sometimes on opposite sides of the tank, this info will need to be save. We'll also need to somehow detect and save the edges of the monitor to compute the loom axis center (or determine it some other way – in a pinch by heuristic hard-coding, but that's not ideal).
 Details to be fleshed-out later.
+- ☐ Extend `annotate.py` (from M2) with a clicking option to pick the extra geometry — monitor
+  edges/corners, loom side — written into the same per-video JSON (schema was left extensible).
 
 ## M4 — Detection accuracy  ☐
 Goal: fix known detection quality issues.

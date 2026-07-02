@@ -32,19 +32,27 @@ uv run analysis.py                               # aggregate CSVs → latency PD
   the temporal motion-energy engine (`get_kernel`, `energy_temporal_series`), `first_sustained`
   (pure coarse/refine detector on precomputed arrays), and plotting/QA (`make_plot`,
   `save_debug_grid`). Parameters live in the `AnalysisParams` dataclass; `main()` is a thin CLI.
-- `batch.py` — batch runner; imports `analyze_fish_energy` and calls `analyze_video()` per
-  video, writing `<folder>_results.csv` (`filename,stim_idx,final_det_idx`). No stdout scraping.
+- `annotations.py` — per-video annotation metadata (M2): `Annotation` model + `load/save`,
+  `annotation_path()` (mirrors `videos/` → git-tracked `annotations/`), `results_stale()`.
+  `from_dict`/`to_dict` preserve unknown keys (forward-compatible with M3 geometry fields).
+- `annotate.py` — one-time interactive sweep: disposition + ROI clicks per video → JSON, caching
+  `stim_idx`/`det_refined`. This is where the GUI is concentrated (`--redo-all/--redo/--show`).
+- `batch.py` — batch runner; calls `analyze_video()` per video → `<folder>_results.csv`
+  (`filename,stim_idx,final_det_idx`). Interactive ROIs by default, or `--from-annotations`
+  (headless) reading saved ROIs; `--update-annotations` writes results back to the cache.
 - `analysis.py` — reads `{species}_{cond}_results.csv` from cwd, computes latency at
   `FPS = 240`, writes `*_latency_hist.pdf`.
 - `sort_videos.sh` — sorts/renames raw `Trial_*.MP4` into condition folders.
+- `annotations/` — git-tracked JSON sidecars (hand-made; keep in version control unlike `videos/`).
 
 ## Important gotchas
 
-- **Requires a display.** ROI selection uses `cv2.imshow` + mouse callbacks; there is no
-  headless mode yet (saved/reused ROIs are M2). Do not assume `batch.py` runs in CI/sandbox.
-- **Do not run the interactive analyzer/`batch.py` to "verify" changes** — they block on ROI
-  clicks. To verify logic, exercise `analyze_video` / `first_sustained` on a synthetic clip or
-  arrays (no GUI), plus `py_compile`/import checks.
+- **GUI only for annotation.** `annotate.py` and the interactive `batch.py`/single-video CLI
+  use `cv2.imshow` + mouse callbacks and block on clicks — never run them to "verify" changes.
+  Once a folder is annotated, `batch.py --from-annotations` is fully headless.
+- **Verify headlessly.** Exercise `analyze_video` / `first_sustained` on a synthetic clip or
+  arrays, the annotations round-trip, and `batch.py --from-annotations` (set `FISH_VIDEOS_DIR` /
+  `FISH_ANNOTATIONS_DIR` to a scratch dir so tests don't touch the repo), plus `py_compile`.
 - **Keep the library side-effect-free.** `analyze_video` and its helpers must not `print`,
   `sys.exit`, or open GUI windows — those belong in the CLI/`batch.py` layer. `select_roi_click`
   raises `ROISelectionCancelled`; unreadable input raises `VideoOpenError`.
