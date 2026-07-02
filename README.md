@@ -115,6 +115,7 @@ uv run annotate.py videos/Shiner_SloMo/circle --redo-all   # re-annotate everyth
 uv run annotate.py videos/Shiner_SloMo/circle --redo 34.MP4  # re-annotate one clip
 uv run annotate.py videos/Shiner_SloMo/circle --show       # display saved ROIs/results (all)
 uv run annotate.py videos/Shiner_SloMo/circle --show 34.MP4  # ...or just one clip
+uv run annotate.py videos/Shiner_SloMo/circle --show-results  # text-only, no window (headless)
 ```
 
 The `annotations/*.json` files are hand-made and **version-controlled** (unlike the videos).

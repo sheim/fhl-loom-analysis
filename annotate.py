@@ -14,6 +14,7 @@ Modes:
     uv run annotate.py <folder> --redo 34.MP4  # re-annotate one clip
     uv run annotate.py <folder> --show       # display saved ROIs/results for all, no editing
     uv run annotate.py <folder> --show 34.MP4  # display just one clip's annotation
+    uv run annotate.py <folder> --show-results  # text-only results, no ROI window (headless)
     uv run annotate.py <video.MP4>           # a single clip also works
 """
 
@@ -129,8 +130,10 @@ def annotate_video(
     return ann
 
 
-def show_annotation(video: Path, params: afe.AnalysisParams) -> None:
-    """Display the saved annotation for one clip (ROIs drawn on the first frame)."""
+def show_annotation(
+    video: Path, params: afe.AnalysisParams, visual: bool = True
+) -> None:
+    """Print the saved annotation for one clip; if ``visual``, also draw its ROIs in a window."""
     ann = anno.load_annotation(video)
     if ann is None:
         print(f"  [none] {video.name}")
@@ -151,7 +154,7 @@ def show_annotation(video: Path, params: afe.AnalysisParams) -> None:
         )
     print(line)
 
-    if not ann.has_rois:
+    if not visual or not ann.has_rois:
         return
     cap = cv2.VideoCapture(str(video))
     ok, first = cap.read()
@@ -186,7 +189,12 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--show", "--review", nargs="?", const="", default=None, metavar="VIDEO", dest="show",
-        help="Display existing annotations (no editing); optionally name one clip to show just it",
+        help="Display existing annotations (ROI window); optionally name one clip to show just it",
+    )
+    p.add_argument(
+        "--show-results", "--show_results", nargs="?", const="", default=None, metavar="VIDEO",
+        dest="show_results",
+        help="Like --show but text only (no ROI window); optionally name one clip",
     )
     return p.parse_args()
 
@@ -213,16 +221,18 @@ def main() -> None:
         print(f"No videos found in {args.path}", file=sys.stderr)
         sys.exit(2)
 
-    if args.show is not None:
-        if args.show:  # a specific video name was passed
-            show_targets = [v for v in targets if matches_name(v, args.show)]
+    show_arg = args.show if args.show is not None else args.show_results
+    if show_arg is not None:
+        visual = args.show is not None  # --show -> ROI window; --show-results -> text only
+        if show_arg:  # a specific video name was passed
+            show_targets = [v for v in targets if matches_name(v, show_arg)]
             if not show_targets:
-                print(f"No video matching --show {args.show!r}", file=sys.stderr)
+                print(f"No video matching {show_arg!r}", file=sys.stderr)
                 sys.exit(2)
         else:
             show_targets = targets
         for v in show_targets:
-            show_annotation(v, params)
+            show_annotation(v, params, visual=visual)
         return
 
     if args.redo:
