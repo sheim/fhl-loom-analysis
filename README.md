@@ -130,7 +130,7 @@ effective `sigma`, so you can tune from the terminal (add `--show` to pop the en
 ```bash
 # Headless once annotated (recommended):
 uv run batch.py videos/Shiner_SloMo/circle --from-annotations
-#  → circle_results.csv   with header:  filename,stim_idx,final_det_idx
+#  → shiner_circle_results.csv   (species_condition; header filename,stim_idx,final_det_idx)
 
 # Re-run ONE clip to tune detection (annotation untouched until --update-annotations):
 uv run batch.py videos/Sculpin_SloMo/flapping/48.MP4 --from-annotations --energy-sigma 8 --show
@@ -145,8 +145,9 @@ save it with `--update-annotations`. Note the annotation's `annotation` block (R
 and `results.params` are **inputs**; `results.stim_idx`/`det_*` are recomputed **outputs** —
 editing those by hand has no effect.
 
-To feed `analysis.py`, rename the output to the species-prefixed name it expects, e.g.
-`circle_results.csv` → `shiner_circle_results.csv`.
+The CSV is named `<species>_<condition>_results.csv` (species = first token of the folder
+above the condition folder, lowercased: `Sculpin_SloMo` → `sculpin`) — exactly what
+`analysis.py` reads, so **no manual rename** is needed.
 
 ### 5. `analysis.py` — latency aggregation & histograms
 
@@ -172,9 +173,8 @@ uv run analysis.py        # or: python analysis.py
 uv sync                                                   # 1. install
 bash sort_videos.sh videos/Shiner_SloMo                   # 2. prep footage (once)
 uv run annotate.py videos/Shiner_SloMo/circle             # 3. annotate ROIs once (interactive)
-uv run batch.py videos/Shiner_SloMo/circle --from-annotations  # 4. analyze headless
-mv circle_results.csv shiner_circle_results.csv           # 5. rename for the aggregator
-uv run analysis.py                                        # 6. produce latency histograms
+uv run batch.py videos/Shiner_SloMo/circle --from-annotations  # 4. → shiner_circle_results.csv
+uv run analysis.py                                        # 5. produce latency histograms
 ```
 
 ---

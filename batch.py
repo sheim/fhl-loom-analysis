@@ -3,8 +3,9 @@
 Batch fish-escape analyzer.
 
 Imports the single-video pipeline from ``analyze_fish_energy`` and runs it over every
-video in a folder, writing ``<folder>_results.csv`` (schema: ``filename,stim_idx,
-final_det_idx``) plus an optional per-video energy plot under ``out/``.
+video in a folder, writing ``<species>_<condition>_results.csv`` (e.g.
+``sculpin_flapping_results.csv``; schema ``filename,stim_idx,final_det_idx``) plus an
+optional per-video energy plot under ``out/``.
 
 Replaces the old stdout-scraping ``batch_analyze.sh``: results come straight from
 ``analyze_video()``'s return value, so there is no fragile text parsing. The target may be a
@@ -148,15 +149,30 @@ def select_rois(video: Path) -> Optional[Tuple[Roi, Roi]]:
         cap.release()
 
 
+def results_csv_name(target: Path) -> str:
+    """``<species>_<condition>_results.csv`` (e.g. ``sculpin_flapping_results.csv``).
+
+    species = first token of the folder *above* the condition folder, lowercased
+    (``Sculpin_SloMo`` -> ``sculpin``); condition = the containing folder. This matches the
+    names ``analysis.py`` reads, so the CSV needs no manual rename.
+    """
+    r = target.resolve()
+    if target.is_dir():
+        condition, species_dir = r.name, r.parent.name
+    else:
+        condition, species_dir = r.parent.name, r.parent.parent.name
+    species = species_dir.split("_")[0].lower()
+    stem = f"{species}_{condition}" if species else condition
+    return f"{stem}_results.csv"
+
+
 def main() -> None:
     args = parse_args()
     target = args.folder
     if target.is_dir():
         videos = anno.list_videos(target)
-        default_csv = f"{target.name}_results.csv"
     elif target.is_file():
         videos = [target]                      # single-clip re-run (e.g. to tune thresholds)
-        default_csv = f"{target.stem}_results.csv"
     else:
         print(f"Not a file or directory: {target}", file=sys.stderr)
         sys.exit(1)
@@ -165,7 +181,7 @@ def main() -> None:
         print(f"No videos found in {target}", file=sys.stderr)
         sys.exit(2)
 
-    out_csv = args.out_csv or Path(default_csv)
+    out_csv = args.out_csv or Path(results_csv_name(target))
 
     rows: List[Tuple[str, Optional[int], Optional[int]]] = []
     for video in videos:
