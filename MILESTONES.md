@@ -57,9 +57,13 @@ hand-made annotations must be version-controlled. Linked to the clip by **relati
 
 **JSON schema (keep flexible / versioned):**
 - `disposition`: `usable | no_response | bad_video`
-- `annotation`: `stim_roi`, `fish_roi` (first responder) — extensible (M3 adds screen edges, etc.)
-- `results` (stored cache, regenerable): `stim_idx`, `det_refined` (fine-grained), plus the
-  `AnalysisParams` used
+- `annotation`: `stim_roi`, `fish_roi` (first responder), `detected_blip`
+  (`first`/`middle`/`last` — the stimulus blip appears 3x, 1 s apart; late-started recordings
+  can miss the first, so the detector may catch the middle/last) — extensible (M3 adds screen
+  edges, etc.)
+- `results` (stored cache, regenerable): `stim_idx` (first-blip **reference**, corrected from
+  `detected_blip` by 0/240/480 frames = 0/1/2 s at 240 FPS — can be negative for late starts),
+  `stim_idx_detected` (raw), `det_refined` (fine-grained), plus the `AnalysisParams` used
 - provenance: `schema_version`, relative `video` path
 
 **Tasks:**

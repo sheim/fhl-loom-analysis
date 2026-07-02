@@ -14,6 +14,11 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Known true capture rate of the high-speed footage (Hz). File FPS metadata is unreliable for
+# these clips (e.g. 240 fps footage tagged 30 fps), so playback uses this instead. Matches
+# analysis.py's FPS.
+CAPTURE_FPS = 240.0
+
 
 # ----------------------- Config & result types -----------------------
 
@@ -86,7 +91,7 @@ def parse_args() -> argparse.Namespace:
 def select_roi_click(frame: np.ndarray, title: str) -> Tuple[int, int, int, int]:
     msg = (
         f"{title} — click top-left then bottom-right; "
-        f"[r]=reset, [q]=cancel, [Enter]=accept"
+        f"[r]=reset, [q]=cancel, [Space/Enter]=accept"
     )
     cv2.namedWindow(msg, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_EXPANDED)
     pts: List[Tuple[int, int]] = []
@@ -126,6 +131,80 @@ def select_roi_click(frame: np.ndarray, title: str) -> Tuple[int, int, int, int]
         elif key == ord("q"):
             cv2.destroyWindow(msg)
             raise ROISelectionCancelled()
+
+
+def choice_popup(
+    title: str,
+    options: List[Tuple[str, str]],
+    default: Optional[str] = None,
+    window_name: Optional[str] = None,
+) -> str:
+    """Small clickable button popup — pick an option with the mouse.
+
+    ``options`` is a list of ``(label, value)``. Click a button, press a label's first-letter
+    hotkey, or press Space/Enter to take ``default`` (highlighted). ``q``/Esc raises
+    :class:`ROISelectionCancelled`. Returns the chosen value.
+    """
+    win = window_name or title
+    pad, bw, bh, gap, top = 12, 336, 46, 10, 44
+    width = bw + 2 * pad
+    height = top + len(options) * (bh + gap) + pad
+    rects = [(pad, top + i * (bh + gap), bw, bh) for i in range(len(options))]
+
+    hotkeys: dict = {}
+    for label, value in options:
+        for ch in label.lower():
+            if ch.isalpha() and ch not in hotkeys:
+                hotkeys[ch] = value
+                break
+
+    state = {"hover": -1, "value": None}
+
+    def on_mouse(event, x, y, flags, param):
+        idx = -1
+        for i, (rx, ry, rw, rh) in enumerate(rects):
+            if rx <= x <= rx + rw and ry <= y <= ry + rh:
+                idx = i
+                break
+        if event == cv2.EVENT_MOUSEMOVE:
+            state["hover"] = idx
+        elif event == cv2.EVENT_LBUTTONUP and idx >= 0:
+            state["value"] = options[idx][1]
+
+    cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
+    cv2.setMouseCallback(win, on_mouse)
+    try:
+        while True:
+            canvas = np.full((height, width, 3), 40, np.uint8)
+            cv2.putText(
+                canvas, title, (pad, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                (230, 230, 230), 1, cv2.LINE_AA,
+            )
+            for i, (label, value) in enumerate(options):
+                rx, ry, rw, rh = rects[i]
+                fill = (95, 95, 95) if i == state["hover"] else (70, 70, 70)
+                border = (0, 210, 0) if value == default else (120, 120, 120)
+                cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), fill, -1)
+                cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), border, 2)
+                cv2.putText(
+                    canvas, label, (rx + 14, ry + 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (245, 245, 245), 2, cv2.LINE_AA,
+                )
+            cv2.imshow(win, canvas)
+            if state["value"] is not None:
+                return state["value"]
+            key = cv2.waitKey(20) & 0xFF
+            if key == 255:
+                continue
+            if key in (ord("q"), 27):  # q / Esc
+                raise ROISelectionCancelled()
+            if key in (13, 32) and default is not None:  # Space/Enter -> default
+                return default
+            ch = chr(key).lower() if 32 <= key < 127 else ""
+            if ch in hotkeys:
+                return hotkeys[ch]
+    finally:
+        cv2.destroyWindow(win)
 
 
 # ----------------------- Helpers --------------------------------------
@@ -208,15 +287,37 @@ def preprocess_gray_smooth(
         return apply_spatial_smoothing(g, smooth, smooth_ksize, smooth_sigma)
 
 
-def playback_video(cap, fps=30, window_name="Playback"):
-    native_fps = cap.get(cv2.CAP_PROP_FPS)
-    if native_fps <= 0:  # fallback
-        native_fps = 30.0
+def _playback_step(source_fps: float, speed: float, display_fps: float) -> int:
+    """Source frames to advance per displayed frame to hit ``speed``x real-time."""
+    display_fps = max(1.0, float(display_fps))
+    return max(1, int(round(float(source_fps) * float(speed) / display_fps)))
 
-    step = max(1, int(round(native_fps / fps)))
+
+def playback_video(
+    cap,
+    source_fps: Optional[float] = None,
+    speed: float = 1.0,
+    display_fps: float = 30.0,
+    window_name: str = "Playback",
+):
+    """Play the clip in a window at ``speed``x real-time (1.0 = real-time, never slow-mo).
+
+    High-speed clips often carry unreliable FPS metadata (e.g. 240 fps footage tagged 30 fps),
+    which made playback speed inconsistent. Pass ``source_fps`` (the true capture rate, e.g.
+    ``CAPTURE_FPS``) to set the speed deterministically; the file's metadata is only a fallback.
+    """
+    meta_fps = cap.get(cv2.CAP_PROP_FPS)
+    if source_fps and source_fps > 0:
+        src = float(source_fps)
+    elif meta_fps and meta_fps > 0:
+        src = float(meta_fps)
+    else:
+        src = 30.0
+
+    step = _playback_step(src, speed, display_fps)
+    delay = max(1, int(round(1000.0 / max(1.0, display_fps))))
 
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-
     frame_idx = 0
     while True:
         ok, frame = cap.read()
@@ -225,7 +326,7 @@ def playback_video(cap, fps=30, window_name="Playback"):
 
         if frame_idx % step == 0:
             cv2.imshow(window_name, frame)
-            if cv2.waitKey(int(1000 / fps)) & 0xFF == ord("q"):
+            if (cv2.waitKey(delay) & 0xFF) == ord("q"):
                 break
 
         frame_idx += 1
@@ -890,7 +991,7 @@ def main() -> None:
         print("Empty video.", file=sys.stderr)
         sys.exit(1)
 
-    playback_video(cap, fps=30, window_name="Video " + args.video.stem)
+    playback_video(cap, source_fps=CAPTURE_FPS, window_name="Video " + args.video.stem)
     try:
         stim_roi = select_roi_click(first, "Stimulus ROI")
         fish_roi = select_roi_click(first, "Fish ROI")

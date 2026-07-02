@@ -147,11 +147,13 @@ def main() -> None:
                 print("  [skip] annotation has no ROIs", file=sys.stderr)
                 continue
             stim_roi, fish_roi = ann.stim_roi, ann.fish_roi
+            detected_blip = ann.annotation.get("detected_blip", "first")
         else:
             rois = select_rois(video)
             if rois is None:
                 continue
             stim_roi, fish_roi = rois
+            detected_blip = "first"
 
         try:
             result = afe.analyze_video(video, stim_roi, fish_roi, params)
@@ -159,15 +161,21 @@ def main() -> None:
             print(f"  [skip] {e}", file=sys.stderr)
             continue
 
-        print(f"  stim_idx={result.stim_idx}  first_movement={result.final_det_idx}")
-        rows.append((video.name, result.stim_idx, result.final_det_idx))
+        # Report the first-blip reference (corrected for a middle/last detection).
+        stim_ref = anno.corrected_stim_idx(result.stim_idx, detected_blip)
+        note = f" (detected {result.stim_idx}, blip={detected_blip})" if detected_blip != "first" else ""
+        print(f"  stim_idx={stim_ref}{note}  first_movement={result.final_det_idx}")
+        rows.append((video.name, stim_ref, result.final_det_idx))
 
         if args.update_annotations:
             ann = anno.load_annotation(video) or anno.Annotation(
                 video=anno.video_rel(video)
             )
             ann.set_rois(stim_roi, fish_roi)
-            ann.results = anno.results_dict(result, params)
+            ann.annotation.setdefault("detected_blip", detected_blip)
+            ann.results = anno.results_dict(
+                result, params, ann.annotation.get("detected_blip", "first")
+            )
             anno.save_annotation(video, ann)
 
         if not args.no_plots and result.centers:

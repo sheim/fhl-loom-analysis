@@ -97,16 +97,24 @@ uv run analyze_fish_energy.py videos/Shiner_SloMo/circle/34.MP4
 ### 3. `annotate.py` — annotation sweep (do this once per folder)
 
 Records, per video, what a human must eyeball — so downstream analysis runs headless. For each
-clip it plays the video, asks a **disposition** (`usable` / `no_response` / `bad_video`), then
-lets you click the **stimulus** and **fish** (first responder) ROIs; it runs the analyzer and
-caches `stim_idx` / `det_refined` alongside the ROIs in a per-video JSON under a git-tracked
-`annotations/` mirror of `videos/` (e.g. `annotations/Shiner_SloMo/circle/34.json`).
+clip it plays the video, asks a **disposition** (`usable` / `no_response` / `bad_video`) and
+which **blip** the detector caught (`first` / `middle` / `last` — the stimulus blip appears 3×,
+and late-started recordings can miss the first), then lets you click the **stimulus** and
+**fish** (first responder) ROIs. It runs the analyzer and caches `stim_idx` / `det_refined`
+alongside the ROIs in a per-video JSON under a git-tracked `annotations/` mirror of `videos/`
+(e.g. `annotations/Shiner_SloMo/circle/34.json`).
+
+The reported/CSV `stim_idx` is the **first-blip reference**: a `middle`/`last` detection is
+shifted back 240/480 frames (the blips are 1 s = 240 frames apart at 240 FPS; `analysis.py`'s
+latency then comes out right). This can be **negative** for late-started clips — that's
+expected, not a bad row.
 
 ```bash
 uv run annotate.py videos/Shiner_SloMo/circle              # only un-annotated clips (default)
 uv run annotate.py videos/Shiner_SloMo/circle --redo-all   # re-annotate everything
 uv run annotate.py videos/Shiner_SloMo/circle --redo 34.MP4  # re-annotate one clip
-uv run annotate.py videos/Shiner_SloMo/circle --show       # display saved ROIs/results
+uv run annotate.py videos/Shiner_SloMo/circle --show       # display saved ROIs/results (all)
+uv run annotate.py videos/Shiner_SloMo/circle --show 34.MP4  # ...or just one clip
 ```
 
 The `annotations/*.json` files are hand-made and **version-controlled** (unlike the videos).
@@ -170,8 +178,9 @@ via `batch.py --from-annotations`. Remaining limitations, tracked in `MILESTONES
 
 - **Annotation is still interactive** — the one-time sweep needs a GUI to click ROIs (by
   design); only the re-runs are headless.
-- **No data validation** — some existing result CSVs contain negative `stim_idx` / stray
-  whitespace, and `analysis.py` doesn't reject bad rows (M4).
+- **No data validation** — result CSVs can contain stray whitespace and `analysis.py` doesn't
+  reject malformed rows (M4). Note: negative `stim_idx` is **legitimate** (first-blip reference
+  for late-started clips), so validation must not reject it.
 - **`analysis.py` expects renamed CSVs** — `batch.py` emits `<folder>_results.csv`; you must
   rename to the species-prefixed form (e.g. `shiner_circle_results.csv`) it reads.
 - **Gaussian smoothing can trigger premature detection** (noted in git history) — M4.

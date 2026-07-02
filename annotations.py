@@ -160,10 +160,37 @@ def save_annotation(video: Path, ann: Annotation) -> Path:
 # ----------------------- results cache helpers ------------------------
 
 
-def results_dict(result, params) -> Dict:
-    """Build the regenerable ``results`` cache from an AnalysisResult + AnalysisParams."""
+# The stimulus blip repeats 3x per clip, 1 s apart. FRAMERATE GOTCHA: the blips look 60 frames
+# apart in a 60 FPS viewing copy, but the detector/analysis run on the 240 FPS source, where
+# 1 s = 240 frames. So first at t0, middle at +240, last at +480. The FIRST blip is always the
+# timing reference; when recording started late the detector locks onto the middle/last, so we
+# subtract the offset to recover the first-blip frame (may go negative if the first blip
+# predates the recording — that is legitimate, not a bad row).
+BLIP_SPACING_FRAMES = 240  # 1 s at 240 FPS (= 60 frames in a 60 FPS viewing copy)
+BLIP_OFFSETS = {"first": 0, "middle": BLIP_SPACING_FRAMES, "last": 2 * BLIP_SPACING_FRAMES}
+
+
+def corrected_stim_idx(stim_idx, detected_blip: str = "first"):
+    """First-blip reference frame given which blip the detector caught.
+
+    ``detected_blip`` in {first, middle, last} -> subtract {0, 240, 480} (1 s / 2 s at 240 FPS).
+    May return a negative frame for late-started recordings (the first blip is before frame 0).
+    """
+    if stim_idx is None:
+        return None
+    return int(stim_idx) - BLIP_OFFSETS.get(detected_blip or "first", 0)
+
+
+def results_dict(result, params, detected_blip: str = "first") -> Dict:
+    """Regenerable results cache from an AnalysisResult + AnalysisParams.
+
+    ``stim_idx`` is the **first-blip reference** (corrected via ``detected_blip``) — this is what
+    feeds latency; ``stim_idx_detected`` is the raw frame the detector actually found.
+    """
     return {
-        "stim_idx": result.stim_idx,
+        "stim_idx": corrected_stim_idx(result.stim_idx, detected_blip),
+        "stim_idx_detected": result.stim_idx,
+        "detected_blip": detected_blip,
         "det_coarse": result.det_coarse,
         "det_refined": result.det_refined,
         "params": asdict(params),
