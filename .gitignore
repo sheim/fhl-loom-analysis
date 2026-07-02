@@ -14,3 +14,7 @@ uv.lock
 
 *.png
 *.csv
+
+old_results/
+out/
+*.pdf
