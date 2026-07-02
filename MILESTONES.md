@@ -12,13 +12,37 @@ Second, we're going to develop new code for more advanced analysis.
 
 ---
 
-## M0 - Analyze and identify refactoring opportunities, revisit milestones.
+## M0 — Analyze & identify refactoring opportunities  ☑
+Done — findings feed M1. `analyze_fish_energy.py` is one 1051-line file mixing pure core
+(kernel/energy/threshold), video IO, GUI, plotting, and CLI. Key issues:
+- Logic lives in `main()`; library fns call `sys.exit()`/`print()` (e.g. `select_roi_click`
+  exits on cancel) → nothing is safely importable.
+- ~18 tuning params are hard-coded as `main()` locals; batch can't tune them.
+- Redundant compute: baseline is computed twice (`compute_threshold_temporal`'s result is
+  discarded and recomputed inside `track_energy_temporal`); `stride` only subsamples the
+  detection check but energy is computed for every frame anyway; the stride-1 refine pass
+  re-reads frames already processed.
+- Single fish ROI is intentional — it targets the first fish to respond; not a limitation.
+- Cruft: doubled `cap.release()`, unused `import math`, commented-out `save_debug_panels`
+  blocks, empty `out/plot_latency_hist.py`, `out/` name collision (`parent.name+stem`),
+  fragile stdout-scraping in `batch_analyze.sh`.
+- `batch_analyze.py` deleted (was untracked/broken) — removes the duplicate batch runner.
 
 ## M1 — One canonical module + working batch  ☐
-Goal: a single source of truth for detection logic that all entry points call.
-- ☐ Promote `analyze_fish_energy.py` into a clean importable API (no logic in `main()`).
-- ☐ Remove duplicated `compute_threshold` / `scan_window` from `batch_analyze.py`.
-- ☐ One batch entry point that works end-to-end.
+Goal: one side-effect-free library that is the sole source of detection logic; the interactive
+CLI and a new Python batch runner both call it.
+- ☐ Extract `analyze_video(video, stim_roi, fish_roi, params) -> AnalysisResult` from `main()`;
+  no `print`/`sys.exit`/GUI in library code (ROI acquisition & viz become separate steps).
+- ☐ `AnalysisParams` dataclass (defaults = today's hard-coded values), shared by CLI + batch.
+- ☐ Compute the energy series once; run coarse + refine detection on in-memory arrays (drops
+  the double-baseline and the refine re-reads).
+- ☐ New Python batch runner that imports the library and writes results directly (keep the
+  `filename,stim_idx,final_det_idx` schema); retire the stdout-scraping `batch_analyze.sh`.
+- ☐ Remove dead code (doubled `cap.release()`, unused `import math`, commented debug blocks,
+  empty `out/plot_latency_hist.py`) and fix the `out/` name collision (include species).
+
+_Single fish ROI = the first responder (placed manually now; auto-detected in M2)._
+_Batch = new Python runner (recommended over shell — see table in discussion); reversible._
 
 ## M2 — Reusable ROIs  ☐
 Goal: run a first batch sweep that identifies the first fish to move, and defines the ROI. This should be saved in a metadata linked to that video, so further analysis scripts can load the right frames/ROIs without reprocessing everything from scratch. Details to be discussed.
