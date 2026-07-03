@@ -104,6 +104,17 @@ the ROI sweep). Marks extend the same per-video annotation JSON (extensible `ann
 
 _Verified: 10 PNGs written for onset 89 (window 86–95) and the provenance cached in the JSON._
 
+### M3.1b — `fix_start.py` — manual movement-onset correction  ☑
+For clips where the first-movement auto-detection is off:
+- ☑ Scrub the video (±1 / ±30 / ±240 frames, frame number always shown) to the correct onset.
+- ☑ On accept: set `annotation.manual_det` + `results.det_refined`, and regenerate the `frames/`
+  stack around the new frame (shared `annotations.export_frames`).
+- ☑ `batch.py` respects `manual_det` (overrides the recomputed `det_refined`), so re-runs don't
+  clobber the fix.
+
+_Verified: `manual_det`=120 → `det_refined`=120, 10 frames regenerated (start 117), and `batch
+--from-annotations` reports `first_movement=120` (CSV `…,120`). Real scrub UI needs a human._
+
 ### M3.2 — `geometry.py` — interactive marking (works on the exported frames, no video needed)  ◐
 Per clip, load the ~10-frame stack (step through with a/d or ←/→ to disambiguate the moving
 fish; mark on the current frame) and collect into the annotation:

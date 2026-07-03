@@ -32,46 +32,6 @@ import annotations as anno
 
 Roi = Tuple[int, int, int, int]
 
-# Reference-frame export window around the movement-onset frame: [det-PRE .. det+POST] = 10 frames.
-FRAME_PRE, FRAME_POST = 3, 6
-
-
-def export_frames(video: Path, center: int):
-    """Export a ~10-frame window around ``center`` (the movement-onset frame) as PNGs into the
-    git-ignored ``frames/`` mirror, one subfolder per clip — the canvas for M3 geometry marking.
-
-    Returns ``{frame_dir, frame_start, n_frames}`` (repo-relative dir; ``frame_start`` = the
-    video index of the first exported frame) or ``None`` if nothing could be read.
-    """
-    cap = cv2.VideoCapture(str(video))
-    try:
-        if not cap.isOpened():
-            return None
-        nframes = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        start = max(0, center - FRAME_PRE)
-        end = center + FRAME_POST
-        if nframes > 0:
-            end = min(end, nframes - 1)
-        out_dir = anno.frames_dir(video)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-        n = 0
-        for _ in range(start, end + 1):
-            ok, frame = cap.read()
-            if not ok:
-                break
-            cv2.imwrite(str(out_dir / f"{n:03d}.png"), frame)
-            n += 1
-        if n == 0:
-            return None
-        try:
-            rel = str(out_dir.relative_to(anno.REPO_ROOT))
-        except ValueError:
-            rel = str(out_dir)
-        return {"frame_dir": rel, "frame_start": start, "n_frames": n}
-    finally:
-        cap.release()
-
 
 def parse_args() -> argparse.Namespace:
     d = afe.AnalysisParams()
@@ -258,6 +218,11 @@ def main() -> None:
             print(f"  [skip] {e}", file=sys.stderr)
             continue
 
+        # Respect a manually-corrected movement onset (set by fix_start.py); don't recompute it.
+        manual_det = ann.annotation.get("manual_det") if ann else None
+        if manual_det is not None:
+            result.det_refined = int(manual_det)
+
         # Report the first-blip reference (corrected for a middle/last detection).
         stim_ref = anno.corrected_stim_idx(result.stim_idx, detected_blip)
         note = f" (detected {result.stim_idx}, blip={detected_blip})" if detected_blip != "first" else ""
@@ -271,7 +236,7 @@ def main() -> None:
         # Export the reference-frame stack around movement onset (M3 geometry canvas).
         frame_info = None
         if not args.no_frames and result.final_det_idx is not None:
-            frame_info = export_frames(video, result.final_det_idx)
+            frame_info = anno.export_frames(video, result.final_det_idx)
             if frame_info:
                 print(f"  exported {frame_info['n_frames']} frames -> {frame_info['frame_dir']}/")
 

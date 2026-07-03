@@ -33,8 +33,9 @@ uv run analysis.py                               # aggregate CSVs → latency PD
   (pure coarse/refine detector on precomputed arrays), and plotting/QA (`make_plot`,
   `save_debug_grid`). Parameters live in the `AnalysisParams` dataclass; `main()` is a thin CLI.
 - `annotations.py` — per-video annotation metadata (M2): `Annotation` model + `load/save`,
-  `annotation_path()` (mirrors `videos/` → git-tracked `annotations/`), `results_stale()`.
-  `from_dict`/`to_dict` preserve unknown keys (forward-compatible with M3 geometry fields).
+  `annotation_path()` (mirrors `videos/` → git-tracked `annotations/`), `results_stale()`,
+  `frames_dir()`/`export_frames()` (the `frames/` mirror). `from_dict`/`to_dict` preserve
+  unknown keys (forward-compatible with M3 geometry fields).
 - `annotate.py` — one-time interactive sweep: disposition + ROI clicks per video → JSON, caching
   `stim_idx`/`det_refined`. This is where the GUI is concentrated (`--redo-all/--redo/--show`).
 - `batch.py` — batch runner (folder or single file) → `<species>_<condition>_results.csv`
@@ -47,6 +48,9 @@ uv run analysis.py                               # aggregate CSVs → latency PD
 - `geometry.py` — interactive M3 marking on the exported `frames/` stack: 2 tank corners +
   per-fish head/tail (first marked = first responder) → `annotation.tank_corners` /
   `annotation.fish`. Uses the `afe.pick_points` helper (frame-stepping point picker). Tank width = 59 cm.
+- `fix_start.py` — manual movement-onset ("start") correction: scrub the video (±1/±30/±240),
+  set `annotation.manual_det` + `results.det_refined`, and regenerate the `frames/` stack.
+  `batch.py` respects `manual_det` (won't recompute over it).
 - `analysis.py` — reads `{species}_{cond}_results.csv` from cwd, computes latency at
   `FPS = 240`, writes `*_latency_hist.pdf`.
 - `sort_videos.sh` — sorts/renames raw `Trial_*.MP4` into condition folders.

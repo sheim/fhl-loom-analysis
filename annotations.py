@@ -30,6 +30,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import cv2
+
 SCHEMA_VERSION = 1
 DISPOSITIONS = ("usable", "no_response", "bad_video")
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv"}
@@ -87,6 +89,46 @@ def frames_dir(video: Path) -> Path:
     except ValueError:
         rel = Path(v.name)
     return FRAMES_DIR / rel.with_suffix("")
+
+
+# Reference-frame export window around a center frame (e.g. movement onset): 10 frames.
+FRAME_PRE, FRAME_POST = 3, 6
+
+
+def export_frames(video: Path, center: int) -> Optional[Dict]:
+    """Export the window ``[center-FRAME_PRE .. center+FRAME_POST]`` (~10 frames) around
+    ``center`` as PNGs into this clip's ``frames/`` subfolder — the canvas for geometry marking.
+
+    Returns ``{frame_dir (repo-relative), frame_start, n_frames}`` or ``None`` if unreadable.
+    """
+    cap = cv2.VideoCapture(str(video))
+    try:
+        if not cap.isOpened():
+            return None
+        nframes = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        start = max(0, center - FRAME_PRE)
+        end = center + FRAME_POST
+        if nframes > 0:
+            end = min(end, nframes - 1)
+        out_dir = frames_dir(video)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        n = 0
+        for _ in range(start, end + 1):
+            ok, frame = cap.read()
+            if not ok:
+                break
+            cv2.imwrite(str(out_dir / f"{n:03d}.png"), frame)
+            n += 1
+        if n == 0:
+            return None
+        try:
+            rel = str(out_dir.relative_to(REPO_ROOT))
+        except ValueError:
+            rel = str(out_dir)
+        return {"frame_dir": rel, "frame_start": start, "n_frames": n}
+    finally:
+        cap.release()
 
 
 # ----------------------- model ----------------------------------------
