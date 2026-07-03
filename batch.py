@@ -32,6 +32,46 @@ import annotations as anno
 
 Roi = Tuple[int, int, int, int]
 
+# Reference-frame export window around the movement-onset frame: [det-PRE .. det+POST] = 10 frames.
+FRAME_PRE, FRAME_POST = 3, 6
+
+
+def export_frames(video: Path, center: int):
+    """Export a ~10-frame window around ``center`` (the movement-onset frame) as PNGs into the
+    git-ignored ``frames/`` mirror, one subfolder per clip — the canvas for M3 geometry marking.
+
+    Returns ``{frame_dir, frame_start, n_frames}`` (repo-relative dir; ``frame_start`` = the
+    video index of the first exported frame) or ``None`` if nothing could be read.
+    """
+    cap = cv2.VideoCapture(str(video))
+    try:
+        if not cap.isOpened():
+            return None
+        nframes = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        start = max(0, center - FRAME_PRE)
+        end = center + FRAME_POST
+        if nframes > 0:
+            end = min(end, nframes - 1)
+        out_dir = anno.frames_dir(video)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        n = 0
+        for _ in range(start, end + 1):
+            ok, frame = cap.read()
+            if not ok:
+                break
+            cv2.imwrite(str(out_dir / f"{n:03d}.png"), frame)
+            n += 1
+        if n == 0:
+            return None
+        try:
+            rel = str(out_dir.relative_to(anno.REPO_ROOT))
+        except ValueError:
+            rel = str(out_dir)
+        return {"frame_dir": rel, "frame_start": start, "n_frames": n}
+    finally:
+        cap.release()
+
 
 def parse_args() -> argparse.Namespace:
     d = afe.AnalysisParams()
@@ -52,6 +92,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--show", action="store_true",
         help="Pop up the energy plot interactively (blocks until closed) - handy for tuning",
+    )
+    p.add_argument(
+        "--no-frames", action="store_true",
+        help="Skip exporting the reference-frame stack used for M3 geometry marking",
     )
     p.add_argument(
         "--from-annotations",
@@ -224,6 +268,13 @@ def main() -> None:
         )
         rows.append((video.name, stim_ref, result.final_det_idx))
 
+        # Export the reference-frame stack around movement onset (M3 geometry canvas).
+        frame_info = None
+        if not args.no_frames and result.final_det_idx is not None:
+            frame_info = export_frames(video, result.final_det_idx)
+            if frame_info:
+                print(f"  exported {frame_info['n_frames']} frames -> {frame_info['frame_dir']}/")
+
         if args.update_annotations:
             a = ann or anno.Annotation(video=anno.video_rel(video))
             a.set_rois(stim_roi, fish_roi)
@@ -231,6 +282,10 @@ def main() -> None:
             a.results = anno.results_dict(
                 result, params, a.annotation.get("detected_blip", "first")
             )
+            if frame_info:
+                a.annotation["frame_dir"] = frame_info["frame_dir"]
+                a.annotation["frame_start"] = frame_info["frame_start"]
+                a.annotation["n_frames"] = frame_info["n_frames"]
             anno.save_annotation(video, a)
 
         if (not args.no_plots or args.show) and result.centers:

@@ -58,6 +58,7 @@ Clips are ~240 fps `.MP4` (the analyzer also accepts `.mov/.avi/.mkv`).
 | `annotate.py` | python | One-time interactive sweep: record ROIs + disposition per video → `annotations/*.json` |
 | `annotations.py` | python | Annotation schema + load/save (imported by `annotate.py` and `batch.py`) |
 | `monitor_side.py` | python | Infer monitor side (top/bottom) from the stim ROI → `annotation.monitor_side` |
+| `geometry.py` | python | Mark tank corners + fish head/tail (first = first responder) on the exported frame stack (M3) |
 | `batch.py` | python | Batch a folder or one file → `<species>_<condition>_results.csv`; `--from-annotations` (headless) |
 | `analysis.py` | python | Aggregate result CSVs → latency histogram PDFs |
 
@@ -126,7 +127,9 @@ The `annotations/*.json` files are hand-made and **version-controlled** (unlike 
 Runs the analyzer over a **folder or a single video file** and writes one CSV. Results come
 from `analyze_video()`'s return value — no stdout scraping — and unreadable/cancelled clips are
 skipped, not fatal. Each line prints the threshold `thr`, the peak scan energy `Emax`, and the
-effective `sigma`, so you can tune from the terminal (add `--show` to pop the energy plot).
+effective `sigma`, so you can tune from the terminal (add `--show` to pop the energy plot). It
+also exports a 10-frame stack around the movement onset to a git-ignored `frames/` mirror (the
+canvas for M3 geometry marking; disable with `--no-frames`).
 
 ```bash
 # Headless once annotated (recommended):

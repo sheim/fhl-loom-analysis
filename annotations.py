@@ -39,6 +39,8 @@ VIDEOS_DIR = Path(os.environ.get("FISH_VIDEOS_DIR", REPO_ROOT / "videos")).resol
 ANNOTATIONS_DIR = Path(
     os.environ.get("FISH_ANNOTATIONS_DIR", REPO_ROOT / "annotations")
 ).resolve()
+# Exported reference frames (git-ignored; regenerable by batch.py). Mirrors videos/.
+FRAMES_DIR = Path(os.environ.get("FISH_FRAMES_DIR", REPO_ROOT / "frames")).resolve()
 
 Roi = Tuple[int, int, int, int]
 
@@ -74,6 +76,17 @@ def annotation_path(video: Path) -> Path:
     except ValueError:
         rel = Path(v.name)
     return ANNOTATIONS_DIR / rel.with_suffix(".json")
+
+
+def frames_dir(video: Path) -> Path:
+    """Directory of a clip's exported reference frames (``frames/`` mirror of ``videos/``, one
+    subfolder per clip: e.g. ``frames/Sculpin_SloMo/flapping/48/``)."""
+    v = Path(video).resolve()
+    try:
+        rel = v.relative_to(VIDEOS_DIR)
+    except ValueError:
+        rel = Path(v.name)
+    return FRAMES_DIR / rel.with_suffix("")
 
 
 # ----------------------- model ----------------------------------------

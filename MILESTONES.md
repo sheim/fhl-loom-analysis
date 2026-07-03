@@ -86,11 +86,61 @@ interactive annotation sweep by a human (the ROI-clicking part can't be auto-tes
 ## M3 — Identify Orientation and Geometries
 Goal: detect the fish position and orientation heading orientation in relation to the loom direction. This will be used to calculate the angle of the loom w.r.t. to the fish, and the effective rate-of-expansion of the silhouette.
 Note the loom screen is sometimes on opposite sides of the tank, this info will need to be save. We'll also need to somehow detect and save the edges of the monitor to compute the loom axis center (or determine it some other way – in a pinch by heuristic hard-coding, but that's not ideal).
-Details to be fleshed-out later.
+
+A **new interactive script** does the geometry marking (annotate.py stays as-is — we don't redo
+the ROI sweep). Marks extend the same per-video annotation JSON (extensible `annotation` block).
+**Every piece must also work on `no_response` clips** (for complete statistics).
+
 - ☑ `monitor_side.py` — infer monitor side (`top`/`bottom`) from the stim ROI's vertical
   position → `annotation.monitor_side` (no clicking needed; the stim ROI is on the monitor).
-- ☐ Extend `annotate.py` with a clicking option to pick the finer geometry — monitor
-  edges/corners for the loom axis center — written into the same per-video JSON.
+
+### M3.1 — Export reference frames (batch.py)  ☑
+- ☑ At the end of `batch.py`, save a **10-frame window `[det-3 … det+6]`** around the
+  first-movement frame (`final_det_idx`) as PNGs — a stack, not one frame, so the marker can
+  step through them to disambiguate the moving fish. On by default; skip with `--no-frames`.
+- ☑ Location: git-ignored `frames/` mirror of `videos/`, one subfolder per clip
+  (`frames/Sculpin_SloMo/flapping/48/000.png … 009.png`) via `annotations.frames_dir()`.
+- ☑ With `--update-annotations`, records `frame_dir` / `frame_start` / `n_frames` in the JSON.
+
+_Verified: 10 PNGs written for onset 89 (window 86–95) and the provenance cached in the JSON._
+
+### M3.2 — `geometry.py` — interactive marking (works on the exported frames, no video needed)  ◐
+Per clip, load the ~10-frame stack (step through with a/d or ←/→ to disambiguate the moving
+fish; mark on the current frame) and collect into the annotation:
+- ☑ **Tank corners (monitor side):** 2 clicked points → `tank_corners = [[x,y],[x,y]]`. Baseline
+  for pixel scale + defines the monitor-side edge (also confirms `monitor_side`).
+- ☑ **Fish (up to 4), starting with the first to move:** per fish click **head then tail**
+  (2 points) → `fish = [{head, tail}, …]` — index 0 is the first responder (encoded by marking
+  order; no separate reaction label). Head→tail gives position + heading in one go.
+- ☑ New GUI helper `afe.pick_points` (click N labelled points on a frame stack, step/undo/finish).
+- ☑ Skips already-marked clips by default; `--redo`, `--redo-all`, `--show` (draw saved marks).
+
+_Point-collection logic verified headlessly (clicks/step/undo/cancel/finish); the real marking
+pass needs a human (GUI can't be auto-tested) — ◐ until then._
+
+### M3.3 — Geometry computation (headless, later)  ☐
+From `tank_corners` + `monitor_side` + per-fish `head/tail`:
+- ☐ Loom axis center ≈ midpoint of the monitor-side tank edge (refine later); pixel↔real scale
+  from the known tank dimension spanning the two corners.
+- ☐ Per fish: heading angle, loom-direction-vs-fish angle, distance to loom center → effective
+  rate-of-expansion. Emit a per-fish geometry CSV for stats. Details TBD.
+
+### M3.4 — No-response clips (for complete statistics)  ☐
+`no_response`/`bad_video` clips have no ROIs and no movement detection, yet we still want their
+geometry:
+- ☐ Reference frame: no `final_det_idx`, so export a fallback frame (a fixed index, or a quick
+  manual pick). [decision]
+- ☐ `monitor_side` comes from the marked tank corners (not the stim ROI), so `geometry.py`
+  needs no ROIs — it runs the same on these clips.
+- ☐ All fish get `reaction = 3`.
+- ☐ Needs a lightweight path to export a reference frame for clips that don't run `analyze_video`. [decision]
+
+### Decisions
+1. ☑ Exported frames: git-ignored `frames/` mirror; a **~10-frame window** around onset (exact offsets TBD).
+2. ◻ `no_response` reference frame — deferred.
+3. ◻ Fish position (head vs midpoint) — store **both head & tail** now; derive position later (M3.3).
+4. ☑ Pixel↔cm scale: the two tank corners span the **tank width = 59 cm**. (Camera height above
+   the tank bottom = **69 cm** — recorded for later perspective work.)
 
 ## M4 — Detection accuracy  ☐
 Goal: fix known detection quality issues.

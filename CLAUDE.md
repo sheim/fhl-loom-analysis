@@ -37,11 +37,16 @@ uv run analysis.py                               # aggregate CSVs → latency PD
   `from_dict`/`to_dict` preserve unknown keys (forward-compatible with M3 geometry fields).
 - `annotate.py` — one-time interactive sweep: disposition + ROI clicks per video → JSON, caching
   `stim_idx`/`det_refined`. This is where the GUI is concentrated (`--redo-all/--redo/--show`).
-- `batch.py` — batch runner; calls `analyze_video()` per video → `<folder>_results.csv`
+- `batch.py` — batch runner (folder or single file) → `<species>_<condition>_results.csv`
   (`filename,stim_idx,final_det_idx`). Interactive ROIs by default, or `--from-annotations`
-  (headless) reading saved ROIs; `--update-annotations` writes results back to the cache.
+  (headless) reading saved ROIs; `--update-annotations` writes results back. Effective params =
+  defaults ← annotation's `results.params` ← CLI flags. Also exports a 10-frame stack around
+  the movement onset to the git-ignored `frames/` mirror (`--no-frames` to skip; M3 canvas).
 - `monitor_side.py` — infers `annotation.monitor_side` (top/bottom) from the stim ROI's
   vertical position vs frame height (M3 geometry; no clicking).
+- `geometry.py` — interactive M3 marking on the exported `frames/` stack: 2 tank corners +
+  per-fish head/tail (first marked = first responder) → `annotation.tank_corners` /
+  `annotation.fish`. Uses the `afe.pick_points` helper (frame-stepping point picker). Tank width = 59 cm.
 - `analysis.py` — reads `{species}_{cond}_results.csv` from cwd, computes latency at
   `FPS = 240`, writes `*_latency_hist.pdf`.
 - `sort_videos.sh` — sorts/renames raw `Trial_*.MP4` into condition folders.

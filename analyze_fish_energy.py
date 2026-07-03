@@ -207,6 +207,77 @@ def choice_popup(
         cv2.destroyWindow(win)
 
 
+# Arrow-key codes vary by OpenCV backend; accept the common ones plus a/d.
+_LEFT_KEYS = {63234, 65361, 2424832, 81}
+_RIGHT_KEYS = {63235, 65363, 2555904, 83}
+
+
+def pick_points(
+    frames: List[np.ndarray],
+    n: int,
+    prompt: str,
+    point_labels: Optional[List[str]] = None,
+    window_name: str = "Mark",
+    allow_finish: bool = False,
+) -> Optional[List[Tuple[int, int]]]:
+    """Collect ``n`` clicked points on a stack of frames (step through to disambiguate motion).
+
+    Keys: a/d (or ←/→) step frames, [u]/Backspace undo, [Enter/Space] accept once ``n`` points
+    are placed, [q]/Esc cancel (raises :class:`ROISelectionCancelled`). If ``allow_finish`` and
+    'f' is pressed with no points placed, returns ``None`` (caller treats as "no more to mark").
+    Returns the list of ``(x, y)`` points, else ``None`` only for the finish case.
+    """
+    if not frames:
+        raise ROISelectionCancelled()
+    idx = 0
+    pts: List[Tuple[int, int]] = []
+
+    def on_mouse(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONUP and len(pts) < n:
+            pts.append((int(x), int(y)))
+
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback(window_name, on_mouse)
+    try:
+        while True:
+            disp = frames[idx].copy()
+            for i, (px, py) in enumerate(pts):
+                color = (0, 255, 255) if i == 0 else (0, 140, 255)
+                cv2.circle(disp, (px, py), 4, color, -1, cv2.LINE_AA)
+                lbl = point_labels[i] if point_labels and i < len(point_labels) else str(i + 1)
+                cv2.putText(disp, lbl, (px + 6, py - 6), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5, color, 1, cv2.LINE_AA)
+            if len(pts) == 2:
+                cv2.line(disp, pts[0], pts[1], (0, 200, 0), 1, cv2.LINE_AA)
+            cv2.putText(disp, f"{prompt}   [{len(pts)}/{n}]  frame {idx + 1}/{len(frames)}",
+                        (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            hint = "a/d=frame  u=undo  r=reset  Enter=accept  q=cancel" + ("  f=finish" if allow_finish else "")
+            cv2.putText(disp, hint, (8, disp.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45, (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.imshow(window_name, disp)
+
+            key = cv2.waitKeyEx(20)
+            if key == -1:
+                continue
+            k = key & 0xFF
+            if k in (ord("q"), 27):
+                raise ROISelectionCancelled()
+            if allow_finish and k == ord("f") and not pts:
+                return None
+            if k in (ord("u"), 8) and pts:                       # u / Backspace
+                pts.pop()
+            elif k == ord("r"):                                  # reset all points
+                pts.clear()
+            elif k == ord("d") or key in _RIGHT_KEYS:            # next frame
+                idx = min(idx + 1, len(frames) - 1)
+            elif k == ord("a") or key in _LEFT_KEYS:             # prev frame
+                idx = max(idx - 1, 0)
+            elif k in (13, 32) and len(pts) == n:                # Enter / Space
+                return list(pts)
+    finally:
+        cv2.destroyWindow(window_name)
+
+
 # ----------------------- Helpers --------------------------------------
 
 
