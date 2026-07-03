@@ -143,6 +143,9 @@ def show_annotation(
     blip = ann.annotation.get("detected_blip")
     if blip:
         line += f"  blip={blip}"
+    side = ann.annotation.get("monitor_side")
+    if side:
+        line += f"  monitor={side}"
     if ann.results:
         stale = " [STALE: params differ from defaults]" if anno.results_stale(ann, params) else ""
         stim = ann.results.get("stim_idx")

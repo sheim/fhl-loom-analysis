@@ -40,6 +40,8 @@ uv run analysis.py                               # aggregate CSVs → latency PD
 - `batch.py` — batch runner; calls `analyze_video()` per video → `<folder>_results.csv`
   (`filename,stim_idx,final_det_idx`). Interactive ROIs by default, or `--from-annotations`
   (headless) reading saved ROIs; `--update-annotations` writes results back to the cache.
+- `monitor_side.py` — infers `annotation.monitor_side` (top/bottom) from the stim ROI's
+  vertical position vs frame height (M3 geometry; no clicking).
 - `analysis.py` — reads `{species}_{cond}_results.csv` from cwd, computes latency at
   `FPS = 240`, writes `*_latency_hist.pdf`.
 - `sort_videos.sh` — sorts/renames raw `Trial_*.MP4` into condition folders.

@@ -87,8 +87,10 @@ interactive annotation sweep by a human (the ROI-clicking part can't be auto-tes
 Goal: detect the fish position and orientation heading orientation in relation to the loom direction. This will be used to calculate the angle of the loom w.r.t. to the fish, and the effective rate-of-expansion of the silhouette.
 Note the loom screen is sometimes on opposite sides of the tank, this info will need to be save. We'll also need to somehow detect and save the edges of the monitor to compute the loom axis center (or determine it some other way – in a pinch by heuristic hard-coding, but that's not ideal).
 Details to be fleshed-out later.
-- ☐ Extend `annotate.py` (from M2) with a clicking option to pick the extra geometry — monitor
-  edges/corners, loom side — written into the same per-video JSON (schema was left extensible).
+- ☑ `monitor_side.py` — infer monitor side (`top`/`bottom`) from the stim ROI's vertical
+  position → `annotation.monitor_side` (no clicking needed; the stim ROI is on the monitor).
+- ☐ Extend `annotate.py` with a clicking option to pick the finer geometry — monitor
+  edges/corners for the loom axis center — written into the same per-video JSON.
 
 ## M4 — Detection accuracy  ☐
 Goal: fix known detection quality issues.

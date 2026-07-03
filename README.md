@@ -57,7 +57,8 @@ Clips are ~240 fps `.MP4` (the analyzer also accepts `.mov/.avi/.mkv`).
 | `analyze_fish_energy.py` | python | Core importable library **and** interactive single-video CLI |
 | `annotate.py` | python | One-time interactive sweep: record ROIs + disposition per video → `annotations/*.json` |
 | `annotations.py` | python | Annotation schema + load/save (imported by `annotate.py` and `batch.py`) |
-| `batch.py` | python | Batch a folder → `<folder>_results.csv`; interactive **or** `--from-annotations` (headless) |
+| `monitor_side.py` | python | Infer monitor side (top/bottom) from the stim ROI → `annotation.monitor_side` |
+| `batch.py` | python | Batch a folder or one file → `<species>_<condition>_results.csv`; `--from-annotations` (headless) |
 | `analysis.py` | python | Aggregate result CSVs → latency histogram PDFs |
 
 `analyze_fish_energy.py` is the single source of detection logic. `analyze_video(video,
