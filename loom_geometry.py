@@ -6,15 +6,18 @@ For each clip, from the marked geometry (`tank_corners`, `fish`) and the detecti
   - the loom origin = midpoint of the two monitor-side tank corners (where the loom expands from);
   - the pixel->metre scale from the tank width (the two corners span TANK_WIDTH_M = 0.59 m);
   - the distance from the origin to the first-responding fish's head;
-  - the visual angle the silhouette subtends on that fish's retina at movement onset:
-    look up the silhouette width at the elapsed time, then theta = 2*atan((W/2) / distance).
+  - the visual angle the silhouette subtends on that fish's retina at movement onset: the
+    silhouette of width W (looked up at the elapsed time) lies ON the screen (the tank-corner
+    line), centred at the origin, and theta is the angle its two ends subtend at the fish's head
+    (a general triangle — NOT the isosceles 2*atan((W/2)/distance)).
 
 Timing note: the detection frames (`det_refined`, `stim_idx`) are CAMERA frames at 240 fps, but the
 diameter lookup table is at the MONITOR rate of 60 fps, so the elapsed lookup frame is
 (det - stim) * 60/240 = (det - stim) / 4.
 
 Caches the result in each clip's annotation JSON (`geometry` block, alongside `results`); pass
-`-o FILE.csv` to also export an aggregated table for stats. `--show` draws the triangle.
+`-o FILE.csv` to also export an aggregated table for stats. `--show` displays the annotated
+overlay, and `--save` writes it as a PNG (to `--save-dir`, default `out/geometry/`).
 
 Usage:
     uv run loom_geometry.py videos/Sculpin_SloMo/circle
@@ -69,6 +72,18 @@ def silhouette_m(lookup, monitor_frame: float) -> Tuple[float, bool]:
 # ----------------------- geometry -------------------------------------
 
 
+def _subtended_angle_deg(apex, p1, p2) -> float:
+    """Angle (deg) that the segment ``p1``–``p2`` subtends at ``apex`` (a general triangle,
+    not assumed isosceles)."""
+    v1 = (p1[0] - apex[0], p1[1] - apex[1])
+    v2 = (p2[0] - apex[0], p2[1] - apex[1])
+    n1, n2 = math.hypot(*v1), math.hypot(*v2)
+    if n1 == 0 or n2 == 0:
+        return float("nan")
+    cosang = (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)
+    return math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
+
+
 def compute(ann: anno.Annotation, lookup) -> Optional[dict]:
     """Compute loom geometry for a clip, or None if the required marks/results are missing."""
     corners = ann.annotation.get("tank_corners")
@@ -89,20 +104,29 @@ def compute(ann: anno.Annotation, lookup) -> Optional[dict]:
     if px_dist == 0:
         return None
     m_per_px = TANK_WIDTH_M / px_dist
+    screen_u = ((x2 - x1) / px_dist, (y2 - y1) / px_dist)   # unit vector along the screen edge
 
-    head = fish[0]["head"]
+    head = tuple(fish[0]["head"])
     dist_px = math.hypot(head[0] - origin[0], head[1] - origin[1])
     dist_m = dist_px * m_per_px
 
     latency_frames = det - stim
     monitor_frame = latency_frames * (MONITOR_FPS / CAMERA_FPS)   # 240 fps -> 60 fps
     sil_m, in_range = silhouette_m(lookup, monitor_frame)
-    angle_deg = math.degrees(2 * math.atan((sil_m / 2) / dist_m)) if dist_m > 0 else float("nan")
+
+    # The silhouette (width W) sits ON the screen: its base lies along the tank-corner line,
+    # centred at the origin. The retinal angle is what its two ends subtend at the fish's head.
+    half_px = (sil_m / m_per_px) / 2.0
+    base1 = (origin[0] + screen_u[0] * half_px, origin[1] + screen_u[1] * half_px)
+    base2 = (origin[0] - screen_u[0] * half_px, origin[1] - screen_u[1] * half_px)
+    angle_deg = _subtended_angle_deg(head, base1, base2)
 
     return {
         "origin": origin,
         "m_per_px": m_per_px,
-        "head": tuple(head),
+        "head": head,
+        "base1": base1,
+        "base2": base2,
         "dist_m": dist_m,
         "stim": int(stim),
         "det": int(det),
@@ -133,14 +157,9 @@ def _text(img, lines) -> None:
         cv2.putText(img, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
 
-def show_triangle(video: Path, ann: anno.Annotation, g: dict) -> None:
-    """Overlay the full geometry on the exported frame: the screen (tank corners), all fish
+def _draw_overlay(img, ann: anno.Annotation, g: dict) -> None:
+    """Draw the full geometry overlay onto ``img``: the screen (tank corners), all fish
     (head->tail, first responder highlighted), the loom triangle, and the frames/elapsed time."""
-    frames = load_frames(video)
-    if not frames:
-        print(f"  [skip --show] no exported frames: {video.name}", file=sys.stderr)
-        return
-    img = frames[len(frames) // 2].copy()
     ox, oy = int(g["origin"][0]), int(g["origin"][1])
     hx, hy = int(g["head"][0]), int(g["head"][1])
 
@@ -165,16 +184,12 @@ def show_triangle(video: Path, ann: anno.Annotation, g: dict) -> None:
         cv2.putText(img, str(i + 1), (head[0] + 6, head[1] - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
 
-    # --- loom triangle for the first responder ---
-    dx, dy = ox - hx, oy - hy
-    L = math.hypot(dx, dy) or 1.0
-    px, py = -dy / L, dx / L                        # unit perpendicular to head->origin
-    half_px = (g["silhouette_m"] / 2) / g["m_per_px"]
-    b1 = (int(ox + px * half_px), int(oy + py * half_px))
-    b2 = (int(ox - px * half_px), int(oy - py * half_px))
+    # --- loom triangle: base on the screen (tank-corner line), apex at the first responder ---
+    b1 = (int(g["base1"][0]), int(g["base1"][1]))
+    b2 = (int(g["base2"][0]), int(g["base2"][1]))
     cv2.line(img, (hx, hy), b1, (255, 255, 0), 1, cv2.LINE_AA)   # triangle sides
     cv2.line(img, (hx, hy), b2, (255, 255, 0), 1, cv2.LINE_AA)
-    cv2.line(img, b1, b2, (255, 0, 0), 2, cv2.LINE_AA)          # silhouette base
+    cv2.line(img, b1, b2, (255, 0, 0), 3, cv2.LINE_AA)          # silhouette base (on the screen)
     cv2.line(img, (ox, oy), (hx, hy), (0, 255, 255), 1, cv2.LINE_AA)  # distance
     cv2.circle(img, (ox, oy), 6, (0, 255, 0), -1, cv2.LINE_AA)  # loom origin
     cv2.circle(img, (hx, hy), 6, (0, 0, 255), -1, cv2.LINE_AA)  # first responder head
@@ -185,9 +200,16 @@ def show_triangle(video: Path, ann: anno.Annotation, g: dict) -> None:
         f"dist={g['dist_m'] * 100:.1f}cm   silhouette W={g['silhouette_m'] * 100:.1f}cm   "
         f"retina angle={g['angle_deg']:.1f}deg",
     ])
-    cv2.imshow(f"{video.name} - loom geometry (any key)", img)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+
+
+def render(video: Path, ann: anno.Annotation, g: dict):
+    """Return the annotated overlay image for a clip, or None if no exported frames exist."""
+    frames = load_frames(video)
+    if not frames:
+        return None
+    img = frames[len(frames) // 2].copy()
+    _draw_overlay(img, ann, g)
+    return img
 
 
 # ----------------------- CLI ------------------------------------------
@@ -206,12 +228,25 @@ def geometry_record(g: dict) -> dict:
     }
 
 
+def image_name(video: Path) -> str:
+    """Flat, unique overlay filename, e.g. ``Sculpin_SloMo_circle_8.png``."""
+    parts = video.resolve().parts
+    species = parts[-3] if len(parts) >= 3 else ""
+    condition = parts[-2] if len(parts) >= 2 else ""
+    bits = [b for b in (species, condition, video.stem) if b]
+    return "_".join(bits) + ".png"
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Compute loom geometry (distance + retinal angle).")
     p.add_argument("path", type=Path, help="Folder of videos, or a single video file")
     p.add_argument("-o", "--out-csv", type=Path, default=None,
                    help="Also export an aggregated CSV (per-clip geometry always goes into the JSON)")
-    p.add_argument("--show", action="store_true", help="Draw the triangle on the exported frame")
+    p.add_argument("--show", action="store_true", help="Display the annotated overlay per clip")
+    p.add_argument("--save", action="store_true",
+                   help="Save the annotated overlay image per clip (to --save-dir)")
+    p.add_argument("--save-dir", type=Path, default=Path("out/geometry"),
+                   help="Directory for saved overlay images (default: out/geometry)")
     return p.parse_args()
 
 
@@ -250,8 +285,21 @@ def main() -> None:
             f"(latency={g['latency_s']:.3f}s, monitor_frame={g['monitor_frame']:.1f}){flag}"
         )
         rows.append((video.name, g))
-        if args.show:
-            show_triangle(video, ann, g)
+
+        if args.show or args.save:
+            img = render(video, ann, g)
+            if img is None:
+                print(f"  [skip overlay] no exported frames: {video.name}", file=sys.stderr)
+            else:
+                if args.save:
+                    args.save_dir.mkdir(parents=True, exist_ok=True)
+                    out_path = args.save_dir / image_name(video)
+                    cv2.imwrite(str(out_path), img)
+                    print(f"  saved {out_path}")
+                if args.show:
+                    cv2.imshow(f"{video.name} - loom geometry (any key)", img)
+                    cv2.waitKey(0)
+                    cv2.destroyAllWindows()
 
     if args.out_csv:                               # optional aggregation for stats
         with args.out_csv.open("w", newline="") as f:
