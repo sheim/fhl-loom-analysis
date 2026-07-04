@@ -46,7 +46,7 @@ FRAMES_DIR = Path(os.environ.get("FISH_FRAMES_DIR", REPO_ROOT / "frames")).resol
 
 Roi = Tuple[int, int, int, int]
 
-_KNOWN_KEYS = {"schema_version", "video", "disposition", "annotation", "results"}
+_KNOWN_KEYS = {"schema_version", "video", "disposition", "annotation", "results", "geometry"}
 
 
 # ----------------------- paths & discovery ----------------------------
@@ -146,6 +146,7 @@ class Annotation:
     disposition: str = "usable"
     annotation: Dict = field(default_factory=dict)
     results: Optional[Dict] = None
+    geometry: Optional[Dict] = None  # derived loom geometry (loom_geometry.py); persists across batch runs
     schema_version: int = SCHEMA_VERSION
     extra: Dict = field(default_factory=dict)  # unknown keys, preserved on save
 
@@ -174,6 +175,7 @@ class Annotation:
             "disposition": self.disposition,
             "annotation": self.annotation,
             "results": self.results,
+            "geometry": self.geometry,
         }
         d.update(self.extra)  # forward-compat keys
         return d
@@ -186,6 +188,7 @@ class Annotation:
             disposition=d.get("disposition", "usable"),
             annotation=dict(d.get("annotation") or {}),
             results=d.get("results"),
+            geometry=d.get("geometry"),
             schema_version=d.get("schema_version", SCHEMA_VERSION),
             extra=extra,
         )

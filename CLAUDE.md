@@ -51,6 +51,13 @@ uv run analysis.py                               # aggregate CSVs → latency PD
 - `fix_start.py` — manual movement-onset ("start") correction: scrub the video (±1/±30/±240),
   set `annotation.manual_det` + `results.det_refined`, and regenerate the `frames/` stack.
   `batch.py` respects `manual_det` (won't recompute over it).
+- `loom_geometry.py` — M3.3: loom origin = midpoint of `tank_corners`; distance to `fish[0].head`
+  (scaled by the 0.59 m tank width); retinal angle via `diameter_lookup_table.csv` (monitor 60 fps,
+  elapsed lookup frame = `(det-stim)/4`) → `θ=2·atan((W/2)/dist)`. Caches into each clip's JSON
+  `geometry` block (`-o` also exports an aggregated CSV); `--show` draws the triangle.
+  `diameter_lookup_table.csv` is a git-tracked input (`.gitignore` has `!diameter_lookup_table.csv`).
+  The `Annotation` dataclass has a first-class `geometry` field (parallel to `results`; not wiped by
+  `batch`).
 - `analysis.py` — reads `{species}_{cond}_results.csv` from cwd, computes latency at
   `FPS = 240`, writes `*_latency_hist.pdf`.
 - `sort_videos.sh` — sorts/renames raw `Trial_*.MP4` into condition folders.

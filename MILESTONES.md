@@ -129,12 +129,23 @@ fish; mark on the current frame) and collect into the annotation:
 _Point-collection logic verified headlessly (clicks/step/undo/cancel/finish); the real marking
 pass needs a human (GUI can't be auto-tested) — ◐ until then._
 
-### M3.3 — Geometry computation (headless, later)  ☐
-From `tank_corners` + `monitor_side` + per-fish `head/tail`:
-- ☐ Loom axis center ≈ midpoint of the monitor-side tank edge (refine later); pixel↔real scale
-  from the known tank dimension spanning the two corners.
-- ☐ Per fish: heading angle, loom-direction-vs-fish angle, distance to loom center → effective
-  rate-of-expansion. Emit a per-fish geometry CSV for stats. Details TBD.
+### M3.3 — Loom geometry (`loom_geometry.py`)  ☑
+From `tank_corners` + `fish[0].head` + results:
+- ☑ **Loom origin** = midpoint of the two monitor-side corners (center of the monitor edge — where
+  the loom expands from); pixel→metre scale from the tank width (0.59 m spans the two corners).
+- ☑ **Distance** from the origin to the first responder's head (cm).
+- ☑ **Retinal angle**: elapsed monitor frame = `(det-stim)/4` (camera 240 fps → monitor 60 fps) →
+  look up silhouette width (`diameter_lookup_table.csv` `diameter_m`) → `θ = 2·atan((W/2)/dist)`.
+- ☑ Caches the per-clip result in the annotation JSON (`geometry` block — a first-class field
+  parallel to `results`, not wiped by `batch`); `-o FILE.csv` also exports an aggregated table for
+  stats. `--show` draws the triangle on the frame.
+
+_Verified on real clips (clip 8: dist 30.8 cm, W 17.0 cm, angle 30.9° at latency 1.746 s; whole
+circle folder computes). `diameter_lookup_table.csv` is now git-tracked (input, not a result)._
+
+_Deferred: fish **heading** (head→tail) is captured but not yet used — loom-angle-relative-to-fish
+and rate-of-expansion are future work. "Loom origin = corner midpoint" is an interpretation of
+"tank center"; revisit if the true tank centre is wanted._
 
 ### M3.4 — No-response clips (for complete statistics)  ☐
 `no_response`/`bad_video` clips have no ROIs and no movement detection, yet we still want their
