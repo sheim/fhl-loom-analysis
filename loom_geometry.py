@@ -10,6 +10,9 @@ For each clip, from the marked geometry (`tank_corners`, `fish`) and the detecti
     silhouette of width W (looked up at the elapsed time) lies ON the screen (the tank-corner
     line), centred at the origin, and theta is the angle its two ends subtend at the fish's head
     (a general triangle — NOT the isosceles 2*atan((W/2)/distance)).
+  - the rate of change dθ/dt at onset (deg/s): θ evaluated as a function of the (fractional) monitor
+    frame — weighted-centred on the exact onset — and finite-differenced in seconds, with 1st-order
+    (one-sided), 2nd-order (central), and 4th-order (5-point) estimates for a sensitivity check.
 
 Timing note: the detection frames (`det_refined`, `stim_idx`) are CAMERA frames at 240 fps, but the
 diameter lookup table is at the MONITOR rate of 60 fps, so the elapsed lookup frame is
@@ -84,7 +87,21 @@ def _subtended_angle_deg(apex, p1, p2) -> float:
     return math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
 
 
-def compute(ann: anno.Annotation, lookup) -> Optional[dict]:
+def _base_points(sil_m, m_per_px, origin, screen_u):
+    """Silhouette base endpoints on the screen, of width ``sil_m``, centred at the origin (px)."""
+    half_px = (sil_m / m_per_px) / 2.0
+    b1 = (origin[0] + screen_u[0] * half_px, origin[1] + screen_u[1] * half_px)
+    b2 = (origin[0] - screen_u[0] * half_px, origin[1] - screen_u[1] * half_px)
+    return b1, b2
+
+
+def _retinal_angle_deg(sil_m, m_per_px, origin, screen_u, head) -> float:
+    """Angle the on-screen silhouette of width ``sil_m`` subtends at ``head``."""
+    b1, b2 = _base_points(sil_m, m_per_px, origin, screen_u)
+    return _subtended_angle_deg(head, b1, b2)
+
+
+def compute(ann: anno.Annotation, lookup, deriv_step_frames: float = 1.0) -> Optional[dict]:
     """Compute loom geometry for a clip, or None if the required marks/results are missing."""
     corners = ann.annotation.get("tank_corners")
     fish = ann.annotation.get("fish") or []
@@ -116,10 +133,25 @@ def compute(ann: anno.Annotation, lookup) -> Optional[dict]:
 
     # The silhouette (width W) sits ON the screen: its base lies along the tank-corner line,
     # centred at the origin. The retinal angle is what its two ends subtend at the fish's head.
-    half_px = (sil_m / m_per_px) / 2.0
-    base1 = (origin[0] + screen_u[0] * half_px, origin[1] + screen_u[1] * half_px)
-    base2 = (origin[0] - screen_u[0] * half_px, origin[1] - screen_u[1] * half_px)
+    base1, base2 = _base_points(sil_m, m_per_px, origin, screen_u)
     angle_deg = _subtended_angle_deg(head, base1, base2)
+
+    # dθ/dt at onset: θ(t) as a function of the (fractional) monitor frame — weighted-centred on the
+    # exact onset (linear lookup interpolation) and differenced in SECONDS. Compute 1st/2nd/4th-
+    # order-accurate estimates to compare numerical sensitivity.
+    def theta_at(mf):
+        w, _ = silhouette_m(lookup, mf)
+        return _retinal_angle_deg(w, m_per_px, origin, screen_u, head)
+
+    h = max(1e-6, float(deriv_step_frames))              # step in monitor frames
+    dt = h / MONITOR_FPS                                  # seconds
+    mf = monitor_frame
+    dtheta_dt = {
+        "1": (theta_at(mf + h) - theta_at(mf)) / dt,                          # 1st-order (forward)
+        "2": (theta_at(mf + h) - theta_at(mf - h)) / (2 * dt),               # 2nd-order (central)
+        "4": (-theta_at(mf + 2 * h) + 8 * theta_at(mf + h)
+              - 8 * theta_at(mf - h) + theta_at(mf - 2 * h)) / (12 * dt),    # 4th-order (5-point)
+    }
 
     return {
         "origin": origin,
@@ -134,6 +166,8 @@ def compute(ann: anno.Annotation, lookup) -> Optional[dict]:
         "monitor_frame": monitor_frame,
         "silhouette_m": sil_m,
         "angle_deg": angle_deg,
+        "dtheta_dt": dtheta_dt,
+        "deriv_step_frames": h,
         "in_range": in_range,
     }
 
@@ -199,6 +233,8 @@ def _draw_overlay(img, ann: anno.Annotation, g: dict) -> None:
         f"elapsed {g['latency_s']:.3f}s ({g['det'] - g['stim']} cam frames)",
         f"dist={g['dist_m'] * 100:.1f}cm   silhouette W={g['silhouette_m'] * 100:.1f}cm   "
         f"retina angle={g['angle_deg']:.1f}deg",
+        f"d(angle)/dt = {g['dtheta_dt']['2']:.0f} deg/s   "
+        f"(1st {g['dtheta_dt']['1']:.0f}, 4th {g['dtheta_dt']['4']:.0f})",
     ])
 
 
@@ -222,6 +258,9 @@ def geometry_record(g: dict) -> dict:
         "distance_cm": round(g["dist_m"] * 100, 2),
         "silhouette_cm": round(g["silhouette_m"] * 100, 2),
         "angle_deg": round(g["angle_deg"], 2),
+        "dtheta_dt_deg_per_s": round(g["dtheta_dt"]["2"], 2),        # 2nd-order central (headline)
+        "dtheta_dt_by_order": {k: round(v, 2) for k, v in g["dtheta_dt"].items()},
+        "deriv_step_frames": g["deriv_step_frames"],
         "monitor_frame": round(g["monitor_frame"], 2),
         "latency_s": round(g["latency_s"], 4),
         "in_range": g["in_range"],
@@ -247,6 +286,8 @@ def parse_args() -> argparse.Namespace:
                    help="Save the annotated overlay image per clip (to --save-dir)")
     p.add_argument("--save-dir", type=Path, default=Path("out/geometry"),
                    help="Directory for saved overlay images (default: out/geometry)")
+    p.add_argument("--deriv-step-frames", type=float, default=1.0,
+                   help="Finite-difference step for d(angle)/dt, in monitor frames (default: 1)")
     return p.parse_args()
 
 
@@ -270,7 +311,7 @@ def main() -> None:
         if ann is None:
             print(f"  [skip] no annotation: {video.name}", file=sys.stderr)
             continue
-        g = compute(ann, lookup)
+        g = compute(ann, lookup, args.deriv_step_frames)
         if g is None:
             print(f"  [skip] missing geometry/results: {video.name}", file=sys.stderr)
             continue
@@ -282,6 +323,7 @@ def main() -> None:
         print(
             f"  {video.name}: dist={g['dist_m'] * 100:.1f}cm  "
             f"W={g['silhouette_m'] * 100:.1f}cm  angle={g['angle_deg']:.1f}deg  "
+            f"dangle/dt={g['dtheta_dt']['2']:.0f}deg/s  "
             f"(latency={g['latency_s']:.3f}s, monitor_frame={g['monitor_frame']:.1f}){flag}"
         )
         rows.append((video.name, g))

@@ -60,7 +60,7 @@ Clips are ~240 fps `.MP4` (the analyzer also accepts `.mov/.avi/.mkv`).
 | `monitor_side.py` | python | Infer monitor side (top/bottom) from the stim ROI → `annotation.monitor_side` |
 | `geometry.py` | python | Mark tank corners + fish head/tail (first = first responder) on the exported frame stack (M3) |
 | `fix_start.py` | python | Scrub to manually correct the movement-onset frame → updates annotation + regenerates frames |
-| `loom_geometry.py` | python | Distance + retinal angle → each clip's JSON `geometry` block (M3.3); `--show`/`--save` the overlay |
+| `loom_geometry.py` | python | Distance, retinal angle & dθ/dt → each clip's JSON `geometry` block (M3.3/3.5); `--show`/`--save` |
 | `batch.py` | python | Batch a folder or one file → `<species>_<condition>_results.csv`; `--from-annotations` (headless) |
 | `analysis.py` | python | Aggregate result CSVs → latency histogram PDFs |
 

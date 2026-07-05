@@ -135,7 +135,8 @@ From `tank_corners` + `fish[0].head` + results:
   the loom expands from); pixel→metre scale from the tank width (0.59 m spans the two corners).
 - ☑ **Distance** from the origin to the first responder's head (cm).
 - ☑ **Retinal angle**: elapsed monitor frame = `(det-stim)/4` (camera 240 fps → monitor 60 fps) →
-  look up silhouette width (`diameter_lookup_table.csv` `diameter_m`) → `θ = 2·atan((W/2)/dist)`.
+  look up silhouette width W (`diameter_lookup_table.csv` `diameter_m`); its base sits ON the screen
+  (tank-corner line) centred at the origin → θ = angle subtended at the head (general triangle).
 - ☑ Caches the per-clip result in the annotation JSON (`geometry` block — a first-class field
   parallel to `results`, not wiped by `batch`); `-o FILE.csv` also exports an aggregated table for
   stats. `--show` draws the triangle on the frame.
@@ -143,9 +144,40 @@ From `tank_corners` + `fish[0].head` + results:
 _Verified on real clips (clip 8: dist 30.8 cm, W 17.0 cm, angle 30.9° at latency 1.746 s; whole
 circle folder computes). `diameter_lookup_table.csv` is now git-tracked (input, not a result)._
 
-_Deferred: fish **heading** (head→tail) is captured but not yet used — loom-angle-relative-to-fish
-and rate-of-expansion are future work. "Loom origin = corner midpoint" is an interpretation of
-"tank center"; revisit if the true tank centre is wanted._
+_Deferred: fish **heading** (head→tail) is captured but not yet used (loom-angle-relative-to-fish
+is future work). "Loom origin = corner midpoint" is an interpretation of "tank center"; revisit if
+the true tank centre is wanted._
+
+### M3.5 — Rate of change of the retinal angle dθ/dt (`loom_geometry.py`)  ☑
+Goal: the angular **expansion rate** of the retinal angle at movement onset — a key looming cue —
+computed numerically from the silhouette schedule.
+
+Plan:
+- Make the retinal angle a **function of time**: `theta(t)` = at time `t` (s since stimulus), look up
+  the silhouette width `W = diameter_m(monitor_frame = t·60)` (interpolated), put its base ON the
+  screen (tank-corner line) centred at the origin, and take the angle it subtends at the **fixed**
+  first-responder head. Only W varies with t; distance/origin/head are held at their onset values.
+- Onset `t0 = latency_s = (det − stim)/240` s. **Frame-rate handling:** do everything in **seconds**
+  — the silhouette lookup is indexed by monitor frame (60 fps, `mf = t·60`) while detection is in
+  camera frames (240 fps, `/240`); differencing in seconds makes dθ/dt correctly per-second.
+- **Numerical derivative, selectable accuracy order** (to compare sensitivity):
+  - 1st-order (one-sided): `(theta(t0+h) − theta(t0)) / h`
+  - 2nd-order (central): `(theta(t0+h) − theta(t0−h)) / (2h)`   ← the "before & after" scheme
+  - (optional 4th-order 5-point central)
+  - step `h` default = **1 monitor frame = 1/60 s** (the silhouette's native resolution); configurable.
+- Output: `dtheta_dt_deg_per_s` in the `geometry` block (store each order's estimate so 1st vs 2nd
+  can be compared for sensitivity); add it to the `--show`/`--save` overlay text.
+
+**Decisions:** order = finite-difference **accuracy** — compute 1st (one-sided), 2nd (central),
+and 4th (5-point) estimates and store all three to compare sensitivity. Step = **weighted center**:
+anchor the stencil at the exact fractional onset `mf0 = (det−stim)/4` and evaluate θ by linearly
+interpolating the lookup (weighting by proximity to the bracketing monitor frames — which is what
+`silhouette_m` already does); default step `h = 1 monitor frame`, configurable via `--deriv-step-frames`.
+
+_Done. Stored in the `geometry` block as `dtheta_dt_deg_per_s` (2nd-order headline) +
+`dtheta_dt_by_order` (1st/2nd/4th). Verified: clip 8 → 116 deg/s, with 2nd (116.08) and 4th (115.65)
+agreeing to 0.4% and 1st ~6% high (sensitivity visible); a linear-θ test gives exactly 180 deg/s
+(3 deg/frame × 60 fps), confirming the seconds conversion. Also on the `--show`/`--save` overlay._
 
 ### M3.4 — No-response clips (for complete statistics)  ☐
 `no_response`/`bad_video` clips have no ROIs and no movement detection, yet we still want their

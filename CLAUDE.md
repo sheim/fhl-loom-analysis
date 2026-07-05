@@ -54,9 +54,11 @@ uv run analysis.py                               # aggregate CSVs → latency PD
 - `loom_geometry.py` — M3.3: loom origin = midpoint of `tank_corners`; distance to `fish[0].head`
   (scaled by the 0.59 m tank width); retinal angle via `diameter_lookup_table.csv` (monitor 60 fps,
   elapsed lookup frame = `(det-stim)/4`), whose base lies ON the screen (tank-corner line) centred
-  at the origin → `θ` = angle subtended at the head (general triangle, not isosceles). Caches into
-  each clip's JSON `geometry` block (`-o` also exports an aggregated CSV); `--show`/`--save` render
-  the annotated overlay.
+  at the origin → `θ` = angle subtended at the head (general triangle, not isosceles). Plus **dθ/dt**
+  at onset (M3.5): θ as a function of the fractional monitor frame, weighted-centred on the exact
+  onset, finite-differenced in seconds with 1st/2nd/4th-order stencils (`--deriv-step-frames`).
+  Caches into each clip's JSON `geometry` block (`-o` also exports an aggregated CSV);
+  `--show`/`--save` render the annotated overlay.
   `diameter_lookup_table.csv` is a git-tracked input (`.gitignore` has `!diameter_lookup_table.csv`).
   The `Annotation` dataclass has a first-class `geometry` field (parallel to `results`; not wiped by
   `batch`).
