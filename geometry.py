@@ -13,6 +13,10 @@ video access needed. Per clip, on the stack (step through with a/d or ←/→):
 
 Marks are written into the same per-video annotation JSON (extensible `annotation` block).
 
+Re-marking (`--redo`/`--redo-all`) pre-loads and draws any existing marks: press Enter to keep
+each, or `r` to reset and re-pick. Handy after `fix_start.py` moves the onset — keep the tank
+corners (Enter) and re-mark just the fish (r).
+
 Usage:
     uv run geometry.py videos/Sculpin_SloMo/flapping          # only un-marked clips (default)
     uv run geometry.py videos/Sculpin_SloMo/flapping --redo-all
@@ -46,22 +50,36 @@ def is_marked(ann: Optional[anno.Annotation]) -> bool:
     return bool(ann and (ann.annotation.get("tank_corners") or ann.annotation.get("fish")))
 
 
-def mark_clip(frames: List) -> dict:
+def mark_clip(frames: List, existing: Optional[dict] = None) -> dict:
     """Collect tank corners + up to 4 fish (head/tail each; the first marked is the first
-    responder). Raises ``ROISelectionCancelled`` if the user aborts."""
+    responder). If ``existing`` marks are supplied they are **pre-loaded and shown**, so the user
+    can accept each with Enter or press ``r`` to reset and re-pick (e.g. keep the tank corners but
+    re-mark the fish after the onset frame changed). Raises ``ROISelectionCancelled`` if aborted."""
+    existing = existing or {}
+
+    prev_corners = existing.get("tank_corners")
+    corner_prompt = "Tank corners on the MONITOR side (click 2)"
+    if prev_corners:
+        corner_prompt += "  [existing: Enter=keep, r=redo]"
     corners = afe.pick_points(
-        frames, 2, "Tank corners on the MONITOR side (click 2)",
+        frames, 2, corner_prompt,
         point_labels=["corner 1", "corner 2"], window_name="Tank corners",
+        initial=prev_corners,
     )
 
+    prev_fish = existing.get("fish") or []
     fish = []
     for i in range(MAX_FISH):
         prompt = f"Fish {i + 1}: click HEAD then TAIL"
         if i == 0:
             prompt += "  (the FIRST fish to respond)"
+        init = None
+        if i < len(prev_fish):
+            init = [prev_fish[i]["head"], prev_fish[i]["tail"]]
+            prompt += "  [existing: Enter=keep, r=redo]"
         pts = afe.pick_points(
             frames, 2, prompt, point_labels=["head", "tail"],
-            window_name=f"Fish {i + 1}", allow_finish=(i > 0),
+            window_name=f"Fish {i + 1}", allow_finish=(i > 0), initial=init,
         )
         if pts is None:  # user pressed 'f' -> no more fish
             break
@@ -81,7 +99,7 @@ def mark_video(video: Path) -> bool:
         print(f"  [skip] no exported frames (run batch first): {video.name}", file=sys.stderr)
         return False
     try:
-        marks = mark_clip(frames)
+        marks = mark_clip(frames, ann.annotation)
     except afe.ROISelectionCancelled:
         print(f"  [skip] cancelled: {video.name}", file=sys.stderr)
         return False

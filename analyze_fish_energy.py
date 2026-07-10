@@ -219,18 +219,22 @@ def pick_points(
     point_labels: Optional[List[str]] = None,
     window_name: str = "Mark",
     allow_finish: bool = False,
+    initial: Optional[List] = None,
 ) -> Optional[List[Tuple[int, int]]]:
     """Collect ``n`` clicked points on a stack of frames (step through to disambiguate motion).
 
-    Keys: a/d (or ←/→) step frames, [u]/Backspace undo, [Enter/Space] accept once ``n`` points
-    are placed, [q]/Esc cancel (raises :class:`ROISelectionCancelled`). If ``allow_finish`` and
-    'f' is pressed with no points placed, returns ``None`` (caller treats as "no more to mark").
-    Returns the list of ``(x, y)`` points, else ``None`` only for the finish case.
+    Keys: a/d (or ←/→) step frames, [u]/Backspace undo, [r] reset, [Enter/Space] accept once ``n``
+    points are placed, [q]/Esc cancel (raises :class:`ROISelectionCancelled`). If ``allow_finish``
+    and 'f' is pressed with no points placed, returns ``None`` (caller treats as "no more to mark").
+
+    ``initial`` pre-loads existing points (drawn immediately), so the user can accept them as-is
+    with Enter or press ``r`` to reset and re-pick. Returns the list of ``(x, y)`` points, else
+    ``None`` only for the finish case.
     """
     if not frames:
         raise ROISelectionCancelled()
     idx = 0
-    pts: List[Tuple[int, int]] = []
+    pts: List[Tuple[int, int]] = [(int(p[0]), int(p[1])) for p in (initial or [])][:n]
 
     def on_mouse(event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONUP and len(pts) < n:
