@@ -179,6 +179,40 @@ _Done. Stored in the `geometry` block as `dtheta_dt_deg_per_s` (2nd-order headli
 agreeing to 0.4% and 1st ~6% high (sensitivity visible); a linear-θ test gives exactly 180 deg/s
 (3 deg/frame × 60 fps), confirming the seconds conversion. Also on the `--show`/`--save` overlay._
 
+### M3.6 — Analytical dθ/dt (closed form) (`loom_geometry.py`)  ☑
+Goal: an exact closed form for the expansion rate, to cross-check the numerical stencils and to be
+robust near contact (where finite differences blow up).
+
+**Loom schedule.** The lookup table is a virtual object approaching at constant speed: distance is
+linear in time and on-screen diameter ∝ 1/distance, so `W(t) = C / (D0 − v·t)`. `loom_params()` fits
+`(C, D0, v)` from the table by least effort (all `diameter·distance` products equal C = 0.0432 m·m,
+D0 = 2.0 m, v = 1.0 m/s). Then **`dW/dt = v·W² / C`** exactly.
+
+**Chain rule.** dθ/dt = (dθ/da)·(da/dt), where `a` = on-screen half-width in pixels.
+- Geometry: with the base centred on the screen at the origin, θ = `atan2(2a·d⊥, R² − a²)` (apex at
+  the head; `R` = |head−origin|, `d⊥` = perpendicular head→screen distance, both in px). Differentiating:
+  **`dθ/da = 2·d⊥·(R² + a²) / (4a²d⊥² + (R² − a²)²)`** (rad per px).
+- Rate: `da/dt = ½·(dW/dt)/m_per_px = ½·(v·W²/C)/m_per_px` (px/s).
+- `analytical_dtheta_dt()` multiplies them; stored as `dtheta_dt_analytic_deg_per_s` in the `geometry`
+  block (headline numerical `dtheta_dt_deg_per_s` kept alongside).
+
+_Done + validated (71 clips, read-only comparison scripts, no annotations rewritten):_
+- **Closed form is exact.** Finite-differencing θ built from the *smooth* schedule (bypassing the
+  table) converges to the analytical value to ~6 digits as h→0 (clip circle/13, onset on integer
+  frame 112: 1613.03 → analytic 1613.01). The tiny residual for mid-frame onsets (clip 8: 0.14%) is
+  the table's piecewise-linear interpolation of W, not a formula error.
+- **Agreement in the bulk.** For onsets in the first ~85% of the loom, analytic ≈ numerical-2nd/4th
+  (h=1) to <1% (median 0.33% / 0.04%). 1st-order is systematically ~6% high (one-sided bias).
+- **Numerical fails near contact.** In the last ~10% of the table θ(t) curves so sharply that a
+  1-frame stencil has huge truncation error (clip circle/13: num-4th 2079 vs analytic 1613, +29%).
+  The analytical has no truncation or step-size error there → **more trustworthy near contact.**
+- Comparison figure: `out/analysis/dtheta_analytic_vs_numeric.png`.
+- **Headline switched to analytic.** `geometry_record()` now writes `dtheta_dt_deg_per_s` =
+  analytic closed form (numeric 1st/2nd/4th retained in `dtheta_dt_by_order`; explicit
+  `dtheta_dt_analytic_deg_per_s` alongside). Re-ran `loom_geometry.py` over all clips to repopulate
+  (71 usable updated; surgical diff — only the dθ/dt fields changed). `dataset.py` sources the M4
+  "expansion rate" variable from `dtheta_dt_analytic_deg_per_s`; histogram PNGs regenerated.
+
 ### M3.4 — No-response clips (for complete statistics)  ☐
 `no_response`/`bad_video` clips have no ROIs and no movement detection, yet we still want their
 geometry:
@@ -196,16 +230,87 @@ geometry:
 4. ☑ Pixel↔cm scale: the two tank corners span the **tank width = 59 cm**. (Camera height above
    the tank bottom = **69 cm** — recorded for later perspective work.)
 
-## M4 — Detection accuracy  ☐
-Goal: fix known detection quality issues.
-- ☐ Investigate the flagged "gaussian smoothing gives premature detection".
-- ☐ Add a quick way to spot-check detections (debug grids/frames) as a first-class feature.
+## M4 — Analysis  ☐
+Goal: Analyze the data that we've processed into the json files in aggregation, producing both visualizations and the raw numbers. Let's make this part interactive with marimo notebooks (which should be made to be able to run them as scripts as well, and just generate saved plots).
+
+- ☑ Start by looking at the data, do some general statistics and see if you see anything of particular interest, and also check for anomalies. Then we'll discuss and populate this list.
+- ◐ Plot histograms of responses vs {latency, distance, loom-size, expansion-rate of disc, retinal angle}. Have two plots, one for sculpin and one for shiners, and plot all three stimuli-types (circle, fixed, flapping).
+  - ☑ v1 tooling: `dataset.py` (JSON → tidy DataFrame), `plots.py` (`response_histograms` + `save_all`),
+    `notebooks/responses.py` (marimo: variable dropdown + condition/bins/density toggles). Runs
+    interactive (`marimo edit`), headless (`marimo export html`), or as a script (`python …` → `out/analysis/`).
+    Variable map: loom-size = silhouette Ø at onset; expansion-rate = dθ/dt.
+  - ☑ Second stage — distribution fitting (`fits.py`). Candidates: normal (baseline), lognormal,
+    gamma, weibull (last three loc=0, positive support; weibull's shape also captures latency's
+    *left* skew). All 2-param → fair model selection by **AICc** (small-sample-corrected — the right
+    criterion at n≈9-17). KS reported as a descriptive distance only (fitted-param p-values are
+    optimistic). `fit_table()` gives the per-group AICc comparison (+ a `pool`-conditions option to
+    borrow strength); `response_histograms(..., fit=...)` overlays the PDF (`"auto"`=best, or a named
+    dist) annotated with ΔAICc-vs-normal; `save_all` writes `_fit` PNGs + `distribution_fits.csv`;
+    notebook gains a Fit dropdown + pool switch + the AICc table.
+    _Finding: normal wins only 2 / 30 groups. **distance** ≈ normal (ΔAICc<2); **latency** is
+    left-skewed (ceiling at loom contact ~1.9 s) → weibull; **loom size** mild skew; **expansion
+    rate** and **retinal angle** are heavily right-skewed → lognormal/gamma decisively beat normal
+    (ΔAICc up to 36). So use lognormal/gamma for rate-like vars, not normal._
+  - ☑ Reversible outlier exclusion (`dataset.clip_key`, `dataset.exclude`, `dataset.outlier_scores`).
+    Robust modified z-score (0.6745·(x−med)/MAD) within each species×condition group flags candidates
+    (|z|≥3.5) without removing anything; the notebook's "Exclude clips" multiselect filters the plots
+    + fits live (dataset on disk untouched). _E.g. shiner/circle/34 (latency 0.29 s, z=−13, suspected
+    spurious): excluding it leaves the median ~unchanged (1.735→1.742 s) but drops the mean
+    1.636→1.726 s and the SD 0.38→0.12 — a high-leverage point. Note the near-contact high-dθ/dt
+    clips are also flagged but are genuine, so candidates need judgement, not auto-removal._
+  - ☑ dθ/dt **timing sensitivity** (`sensitivity.py`). Per clip: how much the analytic dθ/dt shifts
+    if the movement-onset frame is off by 1 camera frame (central difference in onset time; reported
+    absolute deg/s·frame⁻¹ and relative %·frame⁻¹). Reuses `loom_geometry.screen_frame` (factored out
+    of `compute`) + `analytical_dtheta_dt` — recomputes nothing on disk. `plots.sensitivity_scatter`
+    plots it vs a selectable x-axis with a marginal histogram of where the first-responders sit;
+    `save_all` writes `dtheta_sensitivity_vs_{latency,distance}.png`; notebook gets an x-axis dropdown
+    + relative/absolute toggle (respects the exclusion filter). The notebook uses an interactive
+    **Plotly** version (`sensitivity_scatter_interactive`) so hovering a point shows its `clip_key`
+    (+ latency/phase/distance/dθ-dt); the matplotlib version stays for the static PNGs. (Added `plotly`.)
+    Plus a **2D bubble view** (`sensitivity_bubble` / `_interactive`): both axes chosen from `XVARS`
+    (now incl. **loom diameter** = silhouette Ø, monotonic with phase), **bubble area ∝ |sensitivity|**,
+    open markers (border = condition, shape = species), and a |sensitivity| threshold keeping only
+    clips at/above it (default 0 = all; magnitude, so the negative-sensitivity clip stays visible).
+    Default axes loom-phase × distance; saved `dtheta_sensitivity_bubble.png`; notebook adds x/y
+    dropdowns + threshold slider with clip_key hover.
+    _Finding: sensitivity tracks **loom phase / latency** (ρ≈+0.94), **not distance** (ρ≈−0.16) — so
+    the milestone's "distance?" guess was wrong. It's ~0 until latency ≈1.5 s then climbs steeply to
+    contact (shiner/circle/13: **34 %/frame**; a 1-frame onset error moves dθ/dt by a third). Because
+    most first-responders respond late (1.7–1.9 s), many sit in this steep regime → the upper tail of
+    the dθ/dt distribution is the least timing-robust. The one large negative (shiner/flapping/4,
+    θ≈160°) is a near-θ=180° geometric edge case (base half-width approaching R)._
+- ☑ Overlay of all fish positions (`positions.py` + `plots.fish_overlay` + `notebooks/positions.py`).
+  Each fish head/tail is registered into a **loom-centred, screen-aligned metric frame** (cm):
+  along-screen (x) from the loom origin, depth-from-screen (y), oriented so fish are at depth>0 —
+  comparable across clips/species. `fish_frame(df)` → one row per fish (`is_responder` = index 0).
+  Overlay: first responders + other fish, with independently toggleable KDE heatmaps for responders
+  (reds), others (grays), **and all fish combined (purples)** — **boundary-corrected** against the
+  tank walls by the reflection (mirror) method (`_kde_reflected`: interior points mirrored across each
+  wall + corners, original Scott bandwidth), so density fills to the walls without leaking past them
+  or fading at them; the folded tank map reflects on the half-tank walls. First responders are marked **by
+  condition** — colour + shape (circle ○ / fixed ■ / flapping ◆); `by_condition` / `others_by_condition`
+  switches (else uniform red / gray). New marimo notebook with species/condition filters + point,
+  by-condition, and heatmap switches; legends sit **below** the plot (never occlude). Plus a custom
+  folded **tank map** (`fish_tankmap`): left/right mirrored into one half (fixes the arbitrary along-sign),
+  the tank drawn as its physical rectangle (59 cm × depth), loom origin at the bottom-left corner, with
+  radiating angle rays (0°=along screen, 90°=perpendicular) to the tank edge + faint radial distance arcs.
+  Tank depth is a control (**shiner 44 cm; sculpin 44 or 30**); `save_all` writes `fish_positions.png` /
+  `_heat.png` / `_tankmap.png`. Uses `scipy`.
+  _Finding: first responders sit **farther from the screen** (mean depth 27.7 cm) than other fish
+  (21.6 cm) — a lobe of non-responders hugs the screen (~8 cm) while responders cluster deeper
+  (~30–40 cm). Tank dims: width 59 cm confirmed by the along-axis extent (±29.5 cm); **registered
+  depths run ~10–15 % past the physical far wall (44 cm) — perspective over-projection to correct
+  later** (camera 69 cm above the tank). The folded map removes the earlier along-sign mirror artifact._
+- ◻ Evaluate what plots would make sense to plot using circular stats? Fill out below ideas that I'm missing.
+  - ◻ centered around loom-direction (orthogonal to the tank-corners-line, and centered in its middle), the location of the fish on the polar coordinate, and {response-time, dθ/dt} as the radial coordinate.
+  - ◻ using the difference between fish orientation and loom-direction as polar coordinate, and {response-time, dθ/dt} as the radial coordinate.
+
 
 ## M5 — Packaging, tests & repo hygiene  ☐
 Goal: reproducible on a fresh machine.
-- ☐ Drop unused deps (`scipy`, `ipython`); write a real `pyproject` description.
+- ☐ Drop unused deps ; write a real `pyproject` description.
 - ☐ Remove cruft (`.venv`, `.venv_win`, `profile.cprof`, `.DS_Store`); tidy `.gitignore`.
-- ☐ Track the files that should be tracked (`README.md`, `MILESTONES.md`, chosen batch script).
+- ☐ Track the files that should be tracked (e.g. `README.md`, `MILESTONES.md`, chosen batch script).
 - ☐ Add a small test suite (unit tests on a tiny sample clip / synthetic frames).
 
 ---

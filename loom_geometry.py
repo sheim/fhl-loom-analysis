@@ -72,6 +72,23 @@ def silhouette_m(lookup, monitor_frame: float) -> Tuple[float, bool]:
     return d0 + t * (d1 - d0), True
 
 
+def loom_params(path: Path = LOOKUP_CSV) -> Tuple[float, float, float]:
+    """Fit the loom schedule ``W(t) = C / (D0 - v·t)`` from the lookup table: the simulated object
+    approaches at constant speed (distance linear in t) so on-screen diameter ∝ 1/distance.
+    Returns ``(C, D0, v)`` — used for the closed-form dW/dt = v·W²/C."""
+    ts, dists, diams = [], [], []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            ts.append(float(row["time_s"]))
+            dists.append(float(row["distance_m"]))
+            diams.append(float(row["diameter_m"]))
+    v = -(dists[-1] - dists[0]) / (ts[-1] - ts[0])                  # approach speed (m/s)
+    D0 = dists[0]
+    prod = [d * s for d, s in zip(diams, dists)]                    # diameter·distance = const
+    C = sum(prod) / len(prod)
+    return C, D0, v
+
+
 # ----------------------- geometry -------------------------------------
 
 
@@ -101,8 +118,42 @@ def _retinal_angle_deg(sil_m, m_per_px, origin, screen_u, head) -> float:
     return _subtended_angle_deg(head, b1, b2)
 
 
-def compute(ann: anno.Annotation, lookup, deriv_step_frames: float = 1.0) -> Optional[dict]:
-    """Compute loom geometry for a clip, or None if the required marks/results are missing."""
+def analytical_dtheta_dt(origin, screen_u, head, sil_m, m_per_px, loom) -> float:
+    """Closed-form dθ/dt (deg/s) at onset (chain rule): the exact geometry derivative
+    ``dθ/da = 2·d⊥·(R²+a²) / (4a²d⊥² + (R²−a²)²)`` (base half-width ``a`` on the screen, apex at
+    the head; d⊥ = perpendicular head→screen, R = |head−origin|) times ``½·dW/dt`` with the loom's
+    exact ``dW/dt = v·W²/C`` from ``W(t)=C/(D0−v·t)``. All lengths in pixels; W in metres."""
+    C, _D0, v = loom
+    hx, hy = head[0] - origin[0], head[1] - origin[1]          # (H - O), pixels
+    d_par = hx * screen_u[0] + hy * screen_u[1]                # along the screen
+    R2 = hx * hx + hy * hy                                      # |H - O|^2
+    d_perp = math.sqrt(max(0.0, R2 - d_par * d_par))           # perpendicular to the screen
+    a = (sil_m / m_per_px) / 2.0                               # half silhouette width, pixels
+    denom = 4 * a * a * d_perp * d_perp + (R2 - a * a) ** 2
+    if denom == 0:
+        return float("nan")
+    dtheta_da = 2 * d_perp * (R2 + a * a) / denom              # rad per pixel of a
+    da_dt = (v * sil_m * sil_m / C) / m_per_px / 2.0           # dW/dt (m/s) -> px/s, then half
+    return math.degrees(dtheta_da * da_dt)
+
+
+def screen_frame(corners):
+    """From the two tank corners → (loom origin = midpoint, unit vector along the screen edge,
+    metres-per-pixel from the 0.59 m tank width). None if the corners coincide."""
+    (x1, y1), (x2, y2) = corners
+    px = math.hypot(x2 - x1, y2 - y1)
+    if px == 0:
+        return None
+    origin = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+    screen_u = ((x2 - x1) / px, (y2 - y1) / px)
+    return origin, screen_u, TANK_WIDTH_M / px
+
+
+def compute(ann: anno.Annotation, lookup, loom=None, deriv_step_frames: float = 1.0) -> Optional[dict]:
+    """Compute loom geometry for a clip, or None if the required marks/results are missing.
+    ``loom`` is the fitted ``(C, D0, v)`` schedule (see ``loom_params``); computed on demand if None."""
+    if loom is None:
+        loom = loom_params()
     corners = ann.annotation.get("tank_corners")
     fish = ann.annotation.get("fish") or []
     r = ann.results or {}
@@ -115,13 +166,10 @@ def compute(ann: anno.Annotation, lookup, deriv_step_frames: float = 1.0) -> Opt
     if stim is None or det is None:
         return None
 
-    (x1, y1), (x2, y2) = corners
-    origin = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
-    px_dist = math.hypot(x2 - x1, y2 - y1)
-    if px_dist == 0:
+    frame = screen_frame(corners)
+    if frame is None:
         return None
-    m_per_px = TANK_WIDTH_M / px_dist
-    screen_u = ((x2 - x1) / px_dist, (y2 - y1) / px_dist)   # unit vector along the screen edge
+    origin, screen_u, m_per_px = frame
 
     head = tuple(fish[0]["head"])
     dist_px = math.hypot(head[0] - origin[0], head[1] - origin[1])
@@ -153,6 +201,9 @@ def compute(ann: anno.Annotation, lookup, deriv_step_frames: float = 1.0) -> Opt
               - 8 * theta_at(mf - h) + theta_at(mf - 2 * h)) / (12 * dt),    # 4th-order (5-point)
     }
 
+    # Closed-form dθ/dt at the same onset — the exact limit the numerical stencils converge to.
+    dtheta_dt_analytic = analytical_dtheta_dt(origin, screen_u, head, sil_m, m_per_px, loom)
+
     return {
         "origin": origin,
         "m_per_px": m_per_px,
@@ -167,6 +218,7 @@ def compute(ann: anno.Annotation, lookup, deriv_step_frames: float = 1.0) -> Opt
         "silhouette_m": sil_m,
         "angle_deg": angle_deg,
         "dtheta_dt": dtheta_dt,
+        "dtheta_dt_analytic": dtheta_dt_analytic,
         "deriv_step_frames": h,
         "in_range": in_range,
     }
@@ -233,8 +285,8 @@ def _draw_overlay(img, ann: anno.Annotation, g: dict) -> None:
         f"elapsed {g['latency_s']:.3f}s ({g['det'] - g['stim']} cam frames)",
         f"dist={g['dist_m'] * 100:.1f}cm   silhouette W={g['silhouette_m'] * 100:.1f}cm   "
         f"retina angle={g['angle_deg']:.1f}deg",
-        f"d(angle)/dt = {g['dtheta_dt']['2']:.0f} deg/s   "
-        f"(1st {g['dtheta_dt']['1']:.0f}, 4th {g['dtheta_dt']['4']:.0f})",
+        f"d(angle)/dt = {g['dtheta_dt_analytic']:.0f} deg/s analytic   "
+        f"(num: 2nd {g['dtheta_dt']['2']:.0f}, 1st {g['dtheta_dt']['1']:.0f}, 4th {g['dtheta_dt']['4']:.0f})",
     ])
 
 
@@ -258,8 +310,9 @@ def geometry_record(g: dict) -> dict:
         "distance_cm": round(g["dist_m"] * 100, 2),
         "silhouette_cm": round(g["silhouette_m"] * 100, 2),
         "angle_deg": round(g["angle_deg"], 2),
-        "dtheta_dt_deg_per_s": round(g["dtheta_dt"]["2"], 2),        # 2nd-order central (headline)
-        "dtheta_dt_by_order": {k: round(v, 2) for k, v in g["dtheta_dt"].items()},
+        "dtheta_dt_deg_per_s": round(g["dtheta_dt_analytic"], 2),    # headline = analytic closed form (M3.6)
+        "dtheta_dt_analytic_deg_per_s": round(g["dtheta_dt_analytic"], 2),   # explicit (same value)
+        "dtheta_dt_by_order": {k: round(v, 2) for k, v in g["dtheta_dt"].items()},  # numeric 1st/2nd/4th
         "deriv_step_frames": g["deriv_step_frames"],
         "monitor_frame": round(g["monitor_frame"], 2),
         "latency_s": round(g["latency_s"], 4),
@@ -303,6 +356,7 @@ def gather_targets(path: Path) -> List[Path]:
 def main() -> None:
     args = parse_args()
     lookup = load_lookup()
+    loom = loom_params()
     videos = gather_targets(args.path)
 
     rows = []
@@ -311,7 +365,7 @@ def main() -> None:
         if ann is None:
             print(f"  [skip] no annotation: {video.name}", file=sys.stderr)
             continue
-        g = compute(ann, lookup, args.deriv_step_frames)
+        g = compute(ann, lookup, loom, args.deriv_step_frames)
         if g is None:
             print(f"  [skip] missing geometry/results: {video.name}", file=sys.stderr)
             continue
@@ -323,7 +377,7 @@ def main() -> None:
         print(
             f"  {video.name}: dist={g['dist_m'] * 100:.1f}cm  "
             f"W={g['silhouette_m'] * 100:.1f}cm  angle={g['angle_deg']:.1f}deg  "
-            f"dangle/dt={g['dtheta_dt']['2']:.0f}deg/s  "
+            f"dangle/dt={g['dtheta_dt_analytic']:.0f}deg/s(analytic)  "
             f"(latency={g['latency_s']:.3f}s, monitor_frame={g['monitor_frame']:.1f}){flag}"
         )
         rows.append((video.name, g))
