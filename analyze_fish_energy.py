@@ -137,17 +137,27 @@ def choice_popup(
     title: str,
     options: List[Tuple[str, str]],
     default: Optional[str] = None,
+    note: Optional[List[str]] = None,
+    companion: Optional[Tuple[str, np.ndarray]] = None,
     window_name: Optional[str] = None,
 ) -> str:
     """Small clickable button popup — pick an option with the mouse.
 
     ``options`` is a list of ``(label, value)``. Click a button, press a label's first-letter
-    hotkey, or press Space/Enter to take ``default`` (highlighted). ``q``/Esc raises
-    :class:`ROISelectionCancelled`. Returns the chosen value.
+    hotkey, or press Space/Enter to take ``default`` (highlighted). ``note`` renders extra
+    (tinted) reminder lines under the title. ``companion`` is an ``(window_name, image)`` kept
+    rendered next to the popup (the caller creates/destroys that window) so the user can eyeball a
+    reference frame while answering. ``q``/Esc raises :class:`ROISelectionCancelled`. Returns the
+    chosen value.
     """
     win = window_name or title
-    pad, bw, bh, gap, top = 12, 336, 46, 10, 44
+    pad, bw, bh, gap = 12, 336, 46, 10
+    header = [(title, 0.55, (235, 235, 235))] + [(s, 0.45, (150, 200, 255)) for s in (note or [])]
+    text_w = max((cv2.getTextSize(s, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)[0][0] for s, fs, _ in header),
+                 default=0)
+    bw = max(bw, text_w)
     width = bw + 2 * pad
+    top = 20 + len(header) * 22 + 8
     height = top + len(options) * (bh + gap) + pad
     rects = [(pad, top + i * (bh + gap), bw, bh) for i in range(len(options))]
 
@@ -175,11 +185,12 @@ def choice_popup(
     cv2.setMouseCallback(win, on_mouse)
     try:
         while True:
+            if companion is not None:
+                cv2.imshow(companion[0], companion[1])   # keep the reference frame rendered
             canvas = np.full((height, width, 3), 40, np.uint8)
-            cv2.putText(
-                canvas, title, (pad, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
-                (230, 230, 230), 1, cv2.LINE_AA,
-            )
+            for j, (line, fs, col) in enumerate(header):
+                cv2.putText(canvas, line, (pad, 20 + (j + 1) * 22 - 6),
+                            cv2.FONT_HERSHEY_SIMPLEX, fs, col, 1, cv2.LINE_AA)
             for i, (label, value) in enumerate(options):
                 rx, ry, rw, rh = rects[i]
                 fill = (95, 95, 95) if i == state["hover"] else (70, 70, 70)

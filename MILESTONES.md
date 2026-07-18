@@ -120,6 +120,15 @@ Per clip, load the ~10-frame stack (step through with a/d or ←/→ to disambig
 fish; mark on the current frame) and collect into the annotation:
 - ☑ **Tank corners (monitor side):** 2 clicked points → `tank_corners = [[x,y],[x,y]]`. Baseline
   for pixel scale + defines the monitor-side edge (also confirms `monitor_side`).
+- ☑ **Far tank corners (2nd edge):** 2 more clicked points → `tank_far_corners = [[x,y],[x,y]]`.
+  The four corners give the full tank quad for a perspective-correct pixel→cm map (M3.7).
+  **Off-frame corner handling:** if one far corner is out of frame, pick "reconstruct" — click the
+  visible far corner + a point on each of its two edges (far wall, side wall); the off-frame corner
+  is their **line intersection** (`_line_intersection`, may fall outside the frame; parallel-edge
+  fallback = parallelogram completion). `tank_far_reconstructed` flags such clips (provenance).
+- ☑ **Tank depth (2nd edge):** `choice_popup` 44 / 30 cm, **Space = 44 default** → `tank_depth_cm`
+  (with a reminder note: 44 cm tank = all shiner experiments, has a 1 cm-grid plexiglass somewhere).
+  `choice_popup` gained a tinted multi-line `note` (auto-widened window).
 - ☑ **Fish (up to 4), starting with the first to move:** per fish click **head then tail**
   (2 points) → `fish = [{head, tail}, …]` — index 0 is the first responder (encoded by marking
   order; no separate reaction label). Head→tail gives position + heading in one go.
@@ -213,6 +222,11 @@ _Done + validated (71 clips, read-only comparison scripts, no annotations rewrit
   (71 usable updated; surgical diff — only the dθ/dt fields changed). `dataset.py` sources the M4
   "expansion rate" variable from `dtheta_dt_analytic_deg_per_s`; histogram PNGs regenerated.
 
+### M3.7 — Perspective-correct positions (homography)  ◐  → build plan now in **M4.2**
+Marking side **done**: `geometry.py` captures `tank_far_corners` + `tank_depth_cm` (+ off-frame
+reconstruction). The compute side (homography `image px → tank cm`, recompute of
+distance/angle/dθ/dt/positions, fallback + validation) is specified under **M4.2**.
+
 ### M3.4 — No-response clips (for complete statistics)  ☐
 `no_response`/`bad_video` clips have no ROIs and no movement detection, yet we still want their
 geometry:
@@ -295,7 +309,10 @@ Goal: Analyze the data that we've processed into the json files in aggregation, 
   the tank drawn as its physical rectangle (59 cm × depth), loom origin at the bottom-left corner, with
   radiating angle rays (0°=along screen, 90°=perpendicular) to the tank edge + faint radial distance arcs.
   Tank depth is a control (**shiner 44 cm; sculpin 44 or 30**); `save_all` writes `fish_positions.png` /
-  `_heat.png` / `_tankmap.png`. Uses `scipy`.
+  `_heat.png` / `_tankmap.png`. Uses `scipy`. Plus an **interactive Altair map** (`fish_interactive`):
+  hovering a fish shows a rich tooltip (fish + trial details) and — linked by `clip_key` — keeps every
+  fish from the *same clip* highlighted while the rest fade (head→tail sticks show heading); `fish_frame`
+  now carries the per-clip experiment fields for the tooltip. (Added `altair`.)
   _Finding: first responders sit **farther from the screen** (mean depth 27.7 cm) than other fish
   (21.6 cm) — a lobe of non-responders hugs the screen (~8 cm) while responders cluster deeper
   (~30–40 cm). Tank dims: width 59 cm confirmed by the along-axis extent (±29.5 cm); **registered
@@ -304,6 +321,69 @@ Goal: Analyze the data that we've processed into the json files in aggregation, 
 - ◻ Evaluate what plots would make sense to plot using circular stats? Fill out below ideas that I'm missing.
   - ◻ centered around loom-direction (orthogonal to the tank-corners-line, and centered in its middle), the location of the fish on the polar coordinate, and {response-time, dθ/dt} as the radial coordinate.
   - ◻ using the difference between fish orientation and loom-direction as polar coordinate, and {response-time, dθ/dt} as the radial coordinate.
+
+### M4.2 — Perspective-correct geometry & distances (homography from the 4 tank corners)  ☑
+Every usable clip now carries 4 corners (`tank_corners` near + `tank_far_corners`) + `tank_depth_cm`
+(**56×44 cm, 15 sculpin×30 cm, 4 with a reconstructed far corner**). Use them to map image pixels →
+**true tank-cm** with a per-clip homography and recompute distance / retinal angle / dθ/dt / positions
+perspective-correctly — fixing the ~10–15 % **depth over-projection** (registered depths currently
+reach ~50 cm inside a 44 cm tank; the along-screen axis is already exact from the 59 cm edge).
+
+**Streamlined idea — one canonical cm frame, reuse all the existing math.** A homography
+`H: image px → tank cm` (near edge → `(0,0)–(59,0)`, far edge at `y = depth`) lets us drop the fish
+head into a *canonical* cm frame where the loom origin is `(29.5, 0)`, the screen direction is `(1,0)`,
+and "metres per unit" = `0.01`. Feeding those into the **existing** helpers (`_base_points`,
+`_subtended_angle_deg`, `_retinal_angle_deg`, `analytical_dtheta_dt`) makes them perspective-correct
+with essentially no new geometry — the silhouette base already lies on the near edge (where the linear
+scale was exact), so only the **head** moves to its true position, which is precisely the error we're
+removing. `compute()` stays the same downstream; only how we obtain `(origin, screen_u, m_per_px, head)`
+changes.
+
+Where to build (each a small, local change):
+- ☐ **`tank.py` (new, pure — numpy/cv2 only):** `homography(near, far, depth_cm) -> H | None`
+  (`cv2.getPerspectiveTransform`; far corners paired to near by proximity → `(0,d)/(59,d)`; None if
+  data missing/degenerate) and `to_cm(H, pts)`. Single source of truth, unit-testable on synthetic quads.
+- ☐ **`loom_geometry.py`:** add `tank_frame(ann)` → `(origin, screen_u, m_per_px, head)` in the cm
+  frame when `H` exists, else today's pixel `screen_frame` path. `compute()` calls it instead of the
+  inline `screen_frame`/head lines — everything after is unchanged. Add `perspective_corrected: bool`
+  to the `geometry` block; keep the old values as `distance_cm_linear` / `angle_deg_linear` for one
+  validation pass, then drop.
+- ☐ **`positions.fish_frame`:** map each fish head/tail through `H` → cm (`along = x−29.5`, `depth = y`),
+  a drop-in for the current linear `_project`; also carry `tank_depth_cm` per clip so the folded tank
+  map's far wall is per-clip (shiner 44; sculpin 44/30) rather than one global slider default.
+- ☐ **Fallback + provenance:** clips without 4 corners/depth fall back to the linear scale (all 71 have
+  them now, but keep it robust); `tank_far_reconstructed` rides along as a QA flag.
+- ☐ **Recompute + validate:** back up `annotations/` (untracked), re-run `loom_geometry.py` over all
+  folders to repopulate the `geometry` block (same idempotent pattern as the analytic-dθ/dt re-run),
+  then a **read-only** linear-vs-perspective compare of distance/angle/dθ/dt (expect the deepest fish
+  to shrink most; **all depths should now land within `[0, tank_depth_cm]`**). `dataset.py`/plots read
+  the refreshed block unchanged; positions recompute live from the annotations.
+
+_Supersedes the M3.7 stub — the marking side (4 corners + depth + off-frame reconstruction) is done;
+this is the compute side._
+
+_Built + validated:_ `tank.py` (`homography`/`to_cm`, exact on a synthetic quad to 1e-6; rejects a
+degenerate quad where the far edge collapses onto the near edge → caller falls back to linear).
+`loom_geometry.tank_frame` feeds the cm frame into `compute` (metrics in cm; **px drawing coords kept
+separate** so the `--show` overlay still works); `perspective_corrected` in the `geometry` block.
+`positions.fish_frame` + `dataset` carry `tank_far_corners`/`tank_depth_cm`. Re-ran over all folders
+(backup first): **70 perspective-corrected, 1 linear**. Effect: distances shrink (median 0.5 cm, max
+7 cm on corrected clips) and retinal angles grow slightly as the head moves to its true (closer)
+position; **30 cm sculpin clips now bounded to ~[0,30] cm depth** (were over-scaled as 44), 44 cm
+clips to ~[0,44] (all fish ≤5 cm past their own far wall). Also recomputed the previously-empty
+geometry for `Shiner_SloMo/fixed/40`.
+_QA finding (resolved):_ `Sculpin_SloMo/circle/30` originally had its far corners clicked on top of
+the near ones (degenerate quad → auto-fell-back to linear); the degeneracy guard caught it and it was
+re-marked. **All 71 usable clips are now `perspective_corrected` (4 with a reconstructed far corner).**
+
+_Saved tank record:_ `geometry_record` now embeds a **`tank`** block (`tank.tank_record`) documenting
+the quad used — `width_cm` (59) + `depth_cm` (44/30), the near/far corner pixel coords, each edge's
+**pixel length** (`sides_px`: near/far ≈ width, left/right = depth — the near-vs-far gap shows the
+perspective), and `far_reconstructed`. Re-ran all folders to populate it (surgical diff: only the
+`tank` key added).
+
+_Follow-up (minor):_ the folded tank map still uses one `tank_length` slider; fish now carry
+`tank_depth_cm`, so the map could default its far wall per selection (shiner 44; sculpin 44/30).
 
 
 ## M5 — Packaging, tests & repo hygiene  ☐

@@ -38,6 +38,7 @@ from typing import List, Optional, Tuple
 import cv2
 
 import annotations as anno
+import tank
 
 TANK_WIDTH_M = 0.59       # the two marked corners span the tank width
 CAMERA_FPS = 240.0
@@ -149,7 +150,34 @@ def screen_frame(corners):
     return origin, screen_u, TANK_WIDTH_M / px
 
 
-def compute(ann: anno.Annotation, lookup, loom=None, deriv_step_frames: float = 1.0) -> Optional[dict]:
+def tank_frame(ann: anno.Annotation, use_homography: bool = True):
+    """Return ``(origin, screen_u, m_per_px, head, perspective_corrected)`` for the first responder.
+
+    With the 4 corners + `tank_depth_cm` marked (and ``use_homography``), the head is mapped through the
+    tank homography into a **canonical tank-cm frame**: loom origin ``(29.5, 0)``, screen direction
+    ``(1, 0)``, and unit = cm so ``m_per_px = 0.01`` — everything downstream (distance, base points,
+    subtended angle, dθ/dt) then works in true centimetres, perspective-correct. Otherwise falls back to
+    the pixel/linear frame from the two monitor corners. None if the marks (2 corners + a fish) are
+    missing."""
+    corners = ann.annotation.get("tank_corners")
+    fish = ann.annotation.get("fish") or []
+    if not corners or len(corners) != 2 or not fish:
+        return None
+    head_px = tuple(fish[0]["head"])
+    H = (tank.homography(corners, ann.annotation.get("tank_far_corners"),
+                         ann.annotation.get("tank_depth_cm")) if use_homography else None)
+    if H is not None:
+        hx, hy = tank.to_cm(H, head_px)
+        return (tank.TANK_WIDTH_CM / 2.0, 0.0), (1.0, 0.0), 0.01, (float(hx), float(hy)), True
+    frame = screen_frame(corners)
+    if frame is None:
+        return None
+    origin, screen_u, m_per_px = frame
+    return origin, screen_u, m_per_px, head_px, False
+
+
+def compute(ann: anno.Annotation, lookup, loom=None, deriv_step_frames: float = 1.0,
+            use_homography: bool = True) -> Optional[dict]:
     """Compute loom geometry for a clip, or None if the required marks/results are missing.
     ``loom`` is the fitted ``(C, D0, v)`` schedule (see ``loom_params``); computed on demand if None."""
     if loom is None:
@@ -166,30 +194,27 @@ def compute(ann: anno.Annotation, lookup, loom=None, deriv_step_frames: float = 
     if stim is None or det is None:
         return None
 
-    frame = screen_frame(corners)
-    if frame is None:
+    # --- metric frame: perspective-correct tank-cm (via homography) when available, else px/linear ---
+    tf = tank_frame(ann, use_homography=use_homography)
+    if tf is None:
         return None
-    origin, screen_u, m_per_px = frame
-
-    head = tuple(fish[0]["head"])
-    dist_px = math.hypot(head[0] - origin[0], head[1] - origin[1])
-    dist_m = dist_px * m_per_px
+    m_origin, m_u, m_scale, m_head, perspective_corrected = tf
+    dist_m = math.hypot(m_head[0] - m_origin[0], m_head[1] - m_origin[1]) * m_scale
 
     latency_frames = det - stim
     monitor_frame = latency_frames * (MONITOR_FPS / CAMERA_FPS)   # 240 fps -> 60 fps
     sil_m, in_range = silhouette_m(lookup, monitor_frame)
 
-    # The silhouette (width W) sits ON the screen: its base lies along the tank-corner line,
-    # centred at the origin. The retinal angle is what its two ends subtend at the fish's head.
-    base1, base2 = _base_points(sil_m, m_per_px, origin, screen_u)
-    angle_deg = _subtended_angle_deg(head, base1, base2)
+    # The silhouette (width W) sits ON the screen: its base lies along the screen edge, centred at the
+    # origin. The retinal angle is what its two ends subtend at the fish's head — computed in the metric
+    # frame, so perspective-correct.
+    angle_deg = _subtended_angle_deg(m_head, *_base_points(sil_m, m_scale, m_origin, m_u))
 
-    # dθ/dt at onset: θ(t) as a function of the (fractional) monitor frame — weighted-centred on the
-    # exact onset (linear lookup interpolation) and differenced in SECONDS. Compute 1st/2nd/4th-
-    # order-accurate estimates to compare numerical sensitivity.
+    # dθ/dt at onset: θ(t) vs the (fractional) monitor frame — weighted-centred on the exact onset and
+    # differenced in SECONDS; 1st/2nd/4th-order estimates for the numerical-sensitivity check.
     def theta_at(mf):
         w, _ = silhouette_m(lookup, mf)
-        return _retinal_angle_deg(w, m_per_px, origin, screen_u, head)
+        return _retinal_angle_deg(w, m_scale, m_origin, m_u, m_head)
 
     h = max(1e-6, float(deriv_step_frames))              # step in monitor frames
     dt = h / MONITOR_FPS                                  # seconds
@@ -202,12 +227,27 @@ def compute(ann: anno.Annotation, lookup, loom=None, deriv_step_frames: float = 
     }
 
     # Closed-form dθ/dt at the same onset — the exact limit the numerical stencils converge to.
-    dtheta_dt_analytic = analytical_dtheta_dt(origin, screen_u, head, sil_m, m_per_px, loom)
+    dtheta_dt_analytic = analytical_dtheta_dt(m_origin, m_u, m_head, sil_m, m_scale, loom)
+
+    # --- drawing coords (pixels) for the --show/--save overlay + the JSON loom_origin ---
+    pxf = screen_frame(corners)
+    if pxf is None:
+        return None
+    origin_px, u_px, mpp_px = pxf
+    head_px = tuple(fish[0]["head"])
+    base1, base2 = _base_points(sil_m, mpp_px, origin_px, u_px)
+
+    # tank quad (sides + lengths) for the saved geometry block — self-documents the geometry used
+    tank_rec = tank.tank_record(corners, ann.annotation.get("tank_far_corners"),
+                                ann.annotation.get("tank_depth_cm"))
+    if tank_rec is not None:
+        tank_rec["far_reconstructed"] = bool(ann.annotation.get("tank_far_reconstructed"))
 
     return {
-        "origin": origin,
-        "m_per_px": m_per_px,
-        "head": head,
+        "origin": origin_px,
+        "tank": tank_rec,
+        "m_per_px": mpp_px,
+        "head": head_px,
         "base1": base1,
         "base2": base2,
         "dist_m": dist_m,
@@ -221,6 +261,7 @@ def compute(ann: anno.Annotation, lookup, loom=None, deriv_step_frames: float = 
         "dtheta_dt_analytic": dtheta_dt_analytic,
         "deriv_step_frames": h,
         "in_range": in_range,
+        "perspective_corrected": perspective_corrected,
     }
 
 
@@ -307,6 +348,7 @@ def geometry_record(g: dict) -> dict:
     """The per-clip geometry cached into the annotation JSON's `geometry` block."""
     return {
         "loom_origin": [round(g["origin"][0], 1), round(g["origin"][1], 1)],
+        "tank": g.get("tank"),                                       # sides + lengths (M4.2)
         "distance_cm": round(g["dist_m"] * 100, 2),
         "silhouette_cm": round(g["silhouette_m"] * 100, 2),
         "angle_deg": round(g["angle_deg"], 2),
@@ -317,6 +359,7 @@ def geometry_record(g: dict) -> dict:
         "monitor_frame": round(g["monitor_frame"], 2),
         "latency_s": round(g["latency_s"], 4),
         "in_range": g["in_range"],
+        "perspective_corrected": g["perspective_corrected"],
     }
 
 
