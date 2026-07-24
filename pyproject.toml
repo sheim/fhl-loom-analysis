@@ -1,17 +1,16 @@
 [project]
 name = "prelimanalysis"
 version = "0.1.0"
-description = "Add your description here"
+description = "Fish escape-response latency & loom-geometry analysis from high-speed (240 fps) video"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "numpy",
     "opencv-python",
-    "scipy",
-    "ipython",
     "matplotlib",
-    "marimo>=0.23.13",
-    "pandas>=2.3.3",
-    "plotly>=6.9.0",
-    "altair>=6.2.2",
+    "scipy",            # distribution fitting (fits.py)
+    "pandas>=2.3.3",    # M4 aggregation
+    "marimo>=0.23.13",  # interactive notebooks
+    "plotly>=6.9.0",    # interactive sensitivity plots
+    "altair>=6.2.2",    # interactive fish-position map
 ]

@@ -28,7 +28,7 @@ Done — findings feed M1. `analyze_fish_energy.py` is one 1051-line file mixing
   fragile stdout-scraping in `batch_analyze.sh`.
 - `batch_analyze.py` deleted (was untracked/broken) — removes the duplicate batch runner.
 
-## M1 — One canonical module + working batch  ◐
+## M1 — One canonical module + working batch  ☑
 Goal: one side-effect-free library that is the sole source of detection logic; the interactive
 CLI and a new Python batch runner both call it.
 - ☑ Extract `analyze_video(video, stim_roi, fish_roi, params) -> AnalysisResult` from `main()`;
@@ -46,7 +46,7 @@ _Batch = new Python runner (recommended over shell — see table in discussion);
 _Verified headlessly (unit tests + synthetic clip: stim@60, refine 89 < coarse 97). Remaining:
 a real-video spot-check by a human, since ROI selection is interactive (◐ until then)._
 
-## M2 — Reusable ROIs (per-video annotations)  ◐
+## M2 — Reusable ROIs (per-video annotations)  ☑
 Goal: a one-time manual sweep that records, per video, what a human must eyeball — so all
 downstream analysis loads it and runs **headless** (annotate once, re-run freely). Builds on
 M1's seam (`analyze_video` already takes ROIs as inputs).
@@ -115,7 +115,7 @@ For clips where the first-movement auto-detection is off:
 _Verified: `manual_det`=120 → `det_refined`=120, 10 frames regenerated (start 117), and `batch
 --from-annotations` reports `first_movement=120` (CSV `…,120`). Real scrub UI needs a human._
 
-### M3.2 — `geometry.py` — interactive marking (works on the exported frames, no video needed)  ◐
+### M3.2 — `geometry.py` — interactive marking (works on the exported frames, no video needed)  ☑
 Per clip, load the ~10-frame stack (step through with a/d or ←/→ to disambiguate the moving
 fish; mark on the current frame) and collect into the annotation:
 - ☑ **Tank corners (monitor side):** 2 clicked points → `tank_corners = [[x,y],[x,y]]`. Baseline
@@ -222,10 +222,10 @@ _Done + validated (71 clips, read-only comparison scripts, no annotations rewrit
   (71 usable updated; surgical diff — only the dθ/dt fields changed). `dataset.py` sources the M4
   "expansion rate" variable from `dtheta_dt_analytic_deg_per_s`; histogram PNGs regenerated.
 
-### M3.7 — Perspective-correct positions (homography)  ◐  → build plan now in **M4.2**
+### M3.7 — Perspective-correct positions (homography)  ☑  → built under **M4.2**
 Marking side **done**: `geometry.py` captures `tank_far_corners` + `tank_depth_cm` (+ off-frame
 reconstruction). The compute side (homography `image px → tank cm`, recompute of
-distance/angle/dθ/dt/positions, fallback + validation) is specified under **M4.2**.
+distance/angle/dθ/dt/positions, fallback + validation) is **done under M4.2**.
 
 ### M3.4 — No-response clips (for complete statistics)  ☐
 `no_response`/`bad_video` clips have no ROIs and no movement detection, yet we still want their
@@ -244,8 +244,11 @@ geometry:
 4. ☑ Pixel↔cm scale: the two tank corners span the **tank width = 59 cm**. (Camera height above
    the tank bottom = **69 cm** — recorded for later perspective work.)
 
-## M4 — Analysis  ☐
+## M4 — Analysis  ◐
 Goal: Analyze the data that we've processed into the json files in aggregation, producing both visualizations and the raw numbers. Let's make this part interactive with marimo notebooks (which should be made to be able to run them as scripts as well, and just generate saved plots).
+_Status: response histograms + distribution fits + outlier exclusion + dθ/dt sensitivity + position
+overlays/tank-map/interactive map + perspective homography (M4.2) all done; **circular-stats plots
+are the remaining item**._
 
 - ☑ Start by looking at the data, do some general statistics and see if you see anything of particular interest, and also check for anomalies. Then we'll discuss and populate this list.
 - ◐ Plot histograms of responses vs {latency, distance, loom-size, expansion-rate of disc, retinal angle}. Have two plots, one for sculpin and one for shiners, and plot all three stimuli-types (circle, fixed, flapping).
@@ -340,20 +343,20 @@ removing. `compute()` stays the same downstream; only how we obtain `(origin, sc
 changes.
 
 Where to build (each a small, local change):
-- ☐ **`tank.py` (new, pure — numpy/cv2 only):** `homography(near, far, depth_cm) -> H | None`
+- ☑ **`tank.py` (new, pure — numpy/cv2 only):** `homography(near, far, depth_cm) -> H | None`
   (`cv2.getPerspectiveTransform`; far corners paired to near by proximity → `(0,d)/(59,d)`; None if
   data missing/degenerate) and `to_cm(H, pts)`. Single source of truth, unit-testable on synthetic quads.
-- ☐ **`loom_geometry.py`:** add `tank_frame(ann)` → `(origin, screen_u, m_per_px, head)` in the cm
+- ☑ **`loom_geometry.py`:** add `tank_frame(ann)` → `(origin, screen_u, m_per_px, head)` in the cm
   frame when `H` exists, else today's pixel `screen_frame` path. `compute()` calls it instead of the
   inline `screen_frame`/head lines — everything after is unchanged. Add `perspective_corrected: bool`
   to the `geometry` block; keep the old values as `distance_cm_linear` / `angle_deg_linear` for one
   validation pass, then drop.
-- ☐ **`positions.fish_frame`:** map each fish head/tail through `H` → cm (`along = x−29.5`, `depth = y`),
+- ☑ **`positions.fish_frame`:** map each fish head/tail through `H` → cm (`along = x−29.5`, `depth = y`),
   a drop-in for the current linear `_project`; also carry `tank_depth_cm` per clip so the folded tank
   map's far wall is per-clip (shiner 44; sculpin 44/30) rather than one global slider default.
-- ☐ **Fallback + provenance:** clips without 4 corners/depth fall back to the linear scale (all 71 have
+- ☑ **Fallback + provenance:** clips without 4 corners/depth fall back to the linear scale (all 71 have
   them now, but keep it robust); `tank_far_reconstructed` rides along as a QA flag.
-- ☐ **Recompute + validate:** back up `annotations/` (untracked), re-run `loom_geometry.py` over all
+- ☑ **Recompute + validate:** back up `annotations/` (untracked), re-run `loom_geometry.py` over all
   folders to repopulate the `geometry` block (same idempotent pattern as the analytic-dθ/dt re-run),
   then a **read-only** linear-vs-perspective compare of distance/angle/dθ/dt (expect the deepest fish
   to shrink most; **all depths should now land within `[0, tank_depth_cm]`**). `dataset.py`/plots read

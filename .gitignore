@@ -6,17 +6,20 @@ dist/
 wheels/
 *.egg-info
 
-# Virtual environments
-.venv
+# Virtual environments (.venv, .venv_win, …)
+.venv*/
+
+# Data & generated outputs (kept out of git; regenerable)
 videos/
-uv.lock
-.python-version
-
-*.png
-*.csv
-!diameter_lookup_table.csv
-
 old_results/
 out/
 frames/
+*.png
+*.csv
+!diameter_lookup_table.csv
 *.pdf
+
+# OS / tooling cruft
+.DS_Store
+*.cprof
+__marimo__/
