@@ -299,8 +299,29 @@ def _draw_overlay(img, ann: anno.Annotation, g: dict) -> None:
         for c in (c1, c2):
             cv2.circle(img, c, 5, (0, 255, 0), 2, cv2.LINE_AA)
         mid = ((c1[0] + c2[0]) // 2, (c1[1] + c2[1]) // 2)
-        cv2.putText(img, "screen 59cm", (mid[0] - 45, mid[1] + 22),
+        cv2.putText(img, f"screen {tank.TANK_WIDTH_CM:.0f}cm", (mid[0] - 45, mid[1] + 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2, cv2.LINE_AA)
+
+    # --- tank quad: the far edge + the two side edges (+ far corners), with side lengths ---
+    tk = g.get("tank")
+    if tk and tk.get("far_corners") and len(corners) == 2:
+        col = (255, 200, 0)                                          # tank walls (matches geometry.py)
+        n0 = (int(corners[0][0]), int(corners[0][1]))
+        n1 = (int(corners[1][0]), int(corners[1][1]))
+        fp = [(int(p[0]), int(p[1])) for p in tk["far_corners"]]
+        fA, fB = (fp[0], fp[1]) if math.dist(fp[0], n0) <= math.dist(fp[1], n0) else (fp[1], fp[0])
+        cv2.line(img, fA, fB, col, 2, cv2.LINE_AA)                  # far edge (= width)
+        cv2.line(img, n0, fA, col, 2, cv2.LINE_AA)                  # side edge (= depth)
+        cv2.line(img, n1, fB, col, 2, cv2.LINE_AA)                  # side edge (= depth)
+        for c in (fA, fB):
+            cv2.circle(img, c, 5, col, 2, cv2.LINE_AA)
+        fmid = ((fA[0] + fB[0]) // 2, (fA[1] + fB[1]) // 2)
+        cv2.putText(img, f"far {tk['width_cm']:.0f}cm", (fmid[0] - 40, fmid[1] - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2, cv2.LINE_AA)
+        if tk.get("depth_cm"):
+            smid = ((n1[0] + fB[0]) // 2, (n1[1] + fB[1]) // 2)
+            cv2.putText(img, f"{tk['depth_cm']:.0f}cm", (smid[0] + 8, smid[1]),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2, cv2.LINE_AA)
 
     # --- all fish: head->tail arrows (index 0 = first responder, highlighted) ---
     for i, f in enumerate(ann.annotation.get("fish") or []):
@@ -321,14 +342,19 @@ def _draw_overlay(img, ann: anno.Annotation, g: dict) -> None:
     cv2.circle(img, (ox, oy), 6, (0, 255, 0), -1, cv2.LINE_AA)  # loom origin
     cv2.circle(img, (hx, hy), 6, (0, 0, 255), -1, cv2.LINE_AA)  # first responder head
 
-    _text(img, [
+    lines = [
         f"stim frame {g['stim']}   movement frame {g['det']}   "
         f"elapsed {g['latency_s']:.3f}s ({g['det'] - g['stim']} cam frames)",
         f"dist={g['dist_m'] * 100:.1f}cm   silhouette W={g['silhouette_m'] * 100:.1f}cm   "
         f"retina angle={g['angle_deg']:.1f}deg",
         f"d(angle)/dt = {g['dtheta_dt_analytic']:.0f} deg/s analytic   "
         f"(num: 2nd {g['dtheta_dt']['2']:.0f}, 1st {g['dtheta_dt']['1']:.0f}, 4th {g['dtheta_dt']['4']:.0f})",
-    ])
+    ]
+    if tk:
+        recon = "  far-corner reconstructed" if tk.get("far_reconstructed") else ""
+        mode = "perspective-corrected" if g.get("perspective_corrected") else "LINEAR (degenerate quad)"
+        lines.append(f"tank {tk['width_cm']:.0f} x {tk['depth_cm']:.0f}cm   [{mode}]{recon}")
+    _text(img, lines)
 
 
 def render(video: Path, ann: anno.Annotation, g: dict):

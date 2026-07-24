@@ -380,7 +380,9 @@ _Saved tank record:_ `geometry_record` now embeds a **`tank`** block (`tank.tank
 the quad used — `width_cm` (59) + `depth_cm` (44/30), the near/far corner pixel coords, each edge's
 **pixel length** (`sides_px`: near/far ≈ width, left/right = depth — the near-vs-far gap shows the
 perspective), and `far_reconstructed`. Re-ran all folders to populate it (surgical diff: only the
-`tank` key added).
+`tank` key added). The **`--save`/`--show` overlay** (`_draw_overlay`) now draws the **full tank quad**
+(far + side edges + far corners, cyan) with the side lengths labelled (near/far 59 cm, sides 44/30 cm)
+and a `tank W x D cm [perspective-corrected]` text line — not just the monitor edge.
 
 _Follow-up (minor):_ the folded tank map still uses one `tank_length` slider; fish now carry
 `tank_depth_cm`, so the map could default its far wall per selection (shiner 44; sculpin 44/30).
